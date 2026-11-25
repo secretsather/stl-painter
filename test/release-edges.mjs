@@ -8,8 +8,8 @@ import { fixture } from './fixture.mjs';
 import { readProject, writeProject } from '../src/files.js';
 import { readSTL } from '../src/mesh.js';
 
-async function desktop(t) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'stl-painter-release-'));
+async function desktop(t, dir) {
+  dir ??= await fs.mkdtemp(path.join(os.tmpdir(), 'stl-painter-release-'));
   const projectFile = path.join(dir, 'Test project.stlp');
   const executablePath = process.env.PAINTER_EXE;
   const app = await _electron.launch({
@@ -34,6 +34,30 @@ async function desktop(t) {
   }
   return { app, page, dir, projectFile, click };
 }
+
+test('stroke refinement starts enabled on launch and on opening a model', async (t) => {
+  const first = await desktop(t);
+  const checkbox = (page) => page.getByRole('checkbox', { name: 'Refine stroke edges' });
+  assert.ok(await checkbox(first.page).isChecked(), 'fresh profile');
+  await checkbox(first.page).uncheck();
+  await first.page.locator('[data-tool="Eraser"]').click();
+  assert.equal(await checkbox(first.page).isChecked(), false, 'Brush and Eraser share the override');
+  await first.page.evaluate(() => localStorage.setItem('refineStrokeEdges', 'off'));
+  await first.app.close();
+
+  const next = await desktop(t, first.dir);
+  assert.ok(await checkbox(next.page).isChecked(), 'relaunch with a legacy off preference');
+  await next.click('save');
+  await checkbox(next.page).uncheck();
+  await next.click('open');
+  assert.ok(await checkbox(next.page).isChecked(), 'reopened project');
+  const stl = path.join(next.dir, 'Slab.stl');
+  await fs.writeFile(stl, fixture());
+  await next.app.evaluate((_, file) => { global.openFixture = file; }, stl);
+  await checkbox(next.page).uncheck();
+  await next.click('open');
+  assert.ok(await checkbox(next.page).isChecked(), 'imported STL');
+});
 
 test('saving when reopening the same project keeps the latest edits in memory and on disk', async (t) => {
   const { page, projectFile, click } = await desktop(t);

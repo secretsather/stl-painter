@@ -443,6 +443,7 @@ function load(project, kind) {
   stroke = null;
   anchor = null;
   selected = Math.min(kind === 'SAMPLE MODEL' ? 2 : 1, p.palette.length - 1);
+  refineEdges.checked = true;
   stampIndex = -1;
   tool = 'Brush';
   armed = false;
@@ -636,9 +637,6 @@ function range(id, out, suffix, placement = false) {
 }
 range('brush-size', 'brush-value', ' px');
 const refineEdges = $('refine-edges');
-refineEdges.checked = localStorage.getItem('refineStrokeEdges') !== 'off';
-refineEdges.onchange = () =>
-  localStorage.setItem('refineStrokeEdges', refineEdges.checked ? 'on' : 'off');
 const refineStamp = $('refine-stamp');
 refineStamp.onchange = () => {
   localStorage.setItem(
