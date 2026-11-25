@@ -2,7 +2,7 @@
 
 STL Painter is an offline Windows desktop app for preparing multicolor 3D prints. Open an STL, paint the surface, add a logo or lettering, and export a color-painted 3MF for your slicer. Save a painter project if you want to come back and edit it later.
 
-**[Download STL Painter 1.0.5 for Windows (64-bit ZIP)](https://github.com/secretsather/stl-painter/releases/download/v1.0.5/STL-Painter-1.0.5-Windows-x64.zip)**
+**[Download STL Painter 1.0.6 for Windows (64-bit ZIP)](https://github.com/secretsather/stl-painter/releases/download/v1.0.6/STL-Painter-1.0.6-Windows-x64.zip)**
 
 ![STL Painter showing the sample fluted vessel with an orange surface and cream stripe, the view cube, and the four-color palette](assets/stl-painter-workspace.png)
 
