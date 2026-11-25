@@ -26,7 +26,7 @@ import { setupImportPreview } from './import-preview.js';
 import { RefinedStroke } from './refined-stroke.js';
 import { applyLeafEdits } from './paint-tree.js';
 import { readSTL, sampleProject, flood, binarySTLFaceCount, checkFaceLimit, LARGE_MODEL_FACES } from './mesh.js';
-import { readProject, writeProject, writeOrca } from './files.js';
+import { readProject, writeProject, write3MF } from './files.js';
 import { textArtwork, loadFontFamilies } from './text-artwork.js';
 import { setupColorLimit } from './color-limit.js';
 import { mapImage, stampCanvas, loadArtwork } from './stamps.js';
@@ -484,7 +484,7 @@ async function task(message, fn) {
 async function write(kind) {
   finishStroke();
   const exported = kind === 'export';
-  const data = exported ? writeOrca(p) : writeProject(p);
+  const data = exported ? write3MF(p) : writeProject(p);
   const name = await files.write(kind, p.name, data);
   if (!name) return false;
   if (!exported) {
@@ -526,7 +526,7 @@ $('open').onclick = () =>
   });
 $('save').onclick = () => task('Saving project…', () => write('save'));
 $('save-as').onclick = () => task('Saving project as…', () => write('saveAs'));
-$('export').onclick = () => task('Preparing Orca export…', () => write('export'));
+$('export').onclick = () => task('Preparing 3MF export…', () => write('export'));
 files.onClose(() => task('Closing project…', async () => (await prepareToLeave()) !== 'cancel'));
 $('undo').onclick = () => undo();
 $('redo').onclick = () => undo(true);

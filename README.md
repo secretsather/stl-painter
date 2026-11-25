@@ -22,7 +22,7 @@ Keep your saved projects in a separate folder. To update a portable copy, extrac
 2. **Choose a color.** Click a palette row to paint with that color. Click its colored square to change the color itself. **Color 1** is the base exposed by the eraser.
 3. **Paint the surface.** Choose **Brush** and left-drag across the model. Right-drag to orbit, hold the mouse wheel and drag to pan, and scroll to zoom. Click a face of the view cube to work straight on.
 4. **Save your work.** Click **Save** to write a self-contained `.stlp` with the model, paint, palette, and stamp library. Use **Ctrl+Shift+S** to save a separate copy.
-5. **Export for printing.** Apply any pending stamp or text, then click **Export (3MF)**. To keep an existing printer setup in OrcaSlicer, open the slicer first and use **File → Import** to add the 3MF to your plate. Check the filament assignments before slicing. Used palette entries are exported in palette order.
+5. **Export for printing.** Apply any pending stamp or text, then click **Export (3MF)**. To keep your current printer settings, open your slicer first and import the 3MF into your plate. Check the filament assignments before slicing. Used palette entries are exported in palette order.
 
 ## Painting tools
 
@@ -89,4 +89,4 @@ npm.cmd start
 | `npm.cmd run dist:portable` | Builds the Windows x64 portable ZIP in `release/`. |
 | `npm.cmd run dist` | Builds the Windows x64 installer in `release/`. |
 
-Set `PAINTER_EXE` to the path of an extracted or installed **STL Painter.exe** to run the desktop tests against that build. Set `ORCA_EXE` to the path of **orca-slicer.exe** to include a 3MF round-trip in the desktop workflow.
+Set `PAINTER_EXE` to the path of an extracted or installed **STL Painter.exe** to run the desktop tests against that build. To test a slicer round-trip, set `SLICER_EXE` to a slicer executable that supports the `--export-3mf` option and painted 3MF files.

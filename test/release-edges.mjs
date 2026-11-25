@@ -35,6 +35,27 @@ async function desktop(t, dir) {
   return { app, page, dir, projectFile, click };
 }
 
+test('Save, Save As and Export show the matching file type and action', async (t) => {
+  const { app, page, click } = await desktop(t);
+  await app.evaluate(({ dialog }) => {
+    dialog.showSaveDialog = async (_, options) => {
+      global.lastSaveDialog = options;
+      return { canceled: true };
+    };
+  });
+  for (const [button, progress, title, filter, extension] of [
+    ['save', 'Saving project…', 'Save painter project', 'Painter project', 'stlp'],
+    ['save-as', 'Saving project as…', 'Save painter project', 'Painter project', 'stlp'],
+    ['export', 'Preparing 3MF export…', 'Export 3MF', '3MF model', '3mf'],
+  ]) {
+    await click(button);
+    assert.equal(await page.locator('#busy > :first-child').textContent(), progress);
+    const options = await app.evaluate(() => global.lastSaveDialog);
+    assert.equal(options.title, title);
+    assert.deepEqual(options.filters, [{ name: filter, extensions: [extension] }]);
+  }
+});
+
 test('stroke refinement starts enabled on launch and on opening a model', async (t) => {
   const first = await desktop(t);
   const checkbox = (page) => page.getByRole('checkbox', { name: 'Refine stroke edges' });

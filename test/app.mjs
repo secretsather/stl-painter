@@ -765,9 +765,9 @@ try {
     config.filament_colour,
     [...new Set(lettered.paint)].sort().map((i) => lettered.palette[i])
   );
-  if (process.env.ORCA_EXE) {
+  if (process.env.SLICER_EXE) {
     const result = spawnSync(
-      process.env.ORCA_EXE,
+      process.env.SLICER_EXE,
       ['--export-3mf', 'Reopened.3mf', 'Painted.3mf'],
       { cwd: dir, timeout: 90000, windowsHide: true }
     );
@@ -785,7 +785,7 @@ try {
     );
     assert.deepEqual(bounds(coords).size, [95, 52, 12]);
     console.log(
-      'OrcaSlicer round-trip passed for dimensions, all facet paint trees and filament slots.'
+      'Slicer round-trip passed for dimensions, all facet paint trees and filament slots.'
     );
   }
   // Cancelling a close or a Save As, and a failed write, must keep the edits.

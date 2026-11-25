@@ -1,5 +1,5 @@
 // Beyond the initial uniform four-way grid, each node splits the edge opposite
-// its numbered vertex. These are Orca's single-edge splits, in child order.
+// its numbered vertex. The painted 3MF stores these single-edge splits in child order.
 export const MAX_EDGE_DEPTH = 16;
 
 export function bisect(a, b, c, side, midpoint) {

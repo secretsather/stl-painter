@@ -1,7 +1,7 @@
 {
   "name": "stl-painter",
   "version": "1.0.6",
-  "description": "Offline surface painting for STL models and OrcaSlicer",
+  "description": "Offline surface painting for STL models with multicolor 3MF export",
   "author": "STL Painter",
   "private": true,
   "type": "module",

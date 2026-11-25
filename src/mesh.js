@@ -1,5 +1,5 @@
 import { walkPaintCells } from './paint-tree.js';
-// The leaf order is part of the project format and matches Orca's four-child split.
+// The leaf order is part of the project format and matches the four-child split in the painted 3MF.
 export const LARGE_MODEL_FACES = 1_000_000;
 export const MAX_FACES = 1_500_000;
 export const MAX_CELLS = 1_800_000;

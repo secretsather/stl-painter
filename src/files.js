@@ -151,14 +151,14 @@ function xml(s) {
     (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c]
   );
 }
-export function writeOrca(p) {
+export function write3MF(p) {
   const used = [...new Set(p.paint)].sort((a, b) => a - b);
   const colors = used.map((i) => p.palette[i].toUpperCase());
   const slots = p.palette.map((_, i) => used.indexOf(i) + 1);
   const header = '<?xml version="1.0" encoding="UTF-8"?>';
   const segments = [
     header,
-    '<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:BambuStudio="http://schemas.bambulab.com/package/2021"><metadata name="BambuStudio:3mfVersion">1</metadata><metadata name="Application">OrcaSlicer-2.3.2</metadata><metadata name="Designer">STL Painter</metadata><resources><object id="1" type="model" name="' +
+    '<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:BambuStudio="http://schemas.bambulab.com/package/2021"><metadata name="BambuStudio:3mfVersion">1</metadata><metadata name="Application">STL Painter</metadata><metadata name="Designer">STL Painter</metadata><resources><object id="1" type="model" name="' +
       xml(p.name) +
       '"><mesh><vertices>',
   ];

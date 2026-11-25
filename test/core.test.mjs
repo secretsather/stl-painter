@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { zipSync, unzipSync, strFromU8 } from 'fflate';
 import { readSTL, newProject, makeSurface, flood, bounds } from '../src/mesh.js';
-import { writeProject, readProject, paintTree, writeOrca } from '../src/files.js';
+import { writeProject, readProject, paintTree, write3MF } from '../src/files.js';
 import { mapImage } from '../src/stamps.js';
 import { stampFootprint } from '../src/stamp-footprint.js';
 import { fixture } from './fixture.mjs';
@@ -52,7 +52,7 @@ test('older projects with stray vertices retain paint, face order and exported g
   };
   const reopened = readProject(writeProject(legacy));
   assert.deepEqual(reopened, clean);
-  const mesh = (p) => unzipSync(writeOrca(p))['3D/3dmodel.model'];
+  const mesh = (p) => unzipSync(write3MF(p))['3D/3dmodel.model'];
   assert.deepEqual(mesh(reopened), mesh(clean));
 });
 
@@ -78,7 +78,7 @@ test('stamp refinement detects an interior ink pixel or hole even when every cor
   }
 });
 
-test('adaptive halves retain winding, use Orca edge codes, and round-trip with their colors', () => {
+test('adaptive halves retain winding, use the 3MF paint edge codes, and round-trip with their colors', () => {
   const p = newProject(
     'triangle',
     Float32Array.of(0, 0, 0, 2, 0, 0, 0, 2, 0),
@@ -99,7 +99,7 @@ test('adaptive halves retain winding, use Orca edge codes, and round-trip with t
     }
     assert.deepEqual(flood(loaded, s, 0, 0, true), [0]);
     assert.deepEqual(flood(loaded, s, 0, 0, false), [0, 1]);
-    const model = strFromU8(unzipSync(writeOrca(loaded))['3D/3dmodel.model']);
+    const model = strFromU8(unzipSync(write3MF(loaded))['3D/3dmodel.model']);
     assert.ok(model.includes('paint_color="48' + (1 + (side - 1) * 4) + '"'));
   }
   const archive = unzipSync(writeProject(p));
@@ -176,7 +176,8 @@ test('independent leaf ordering, filament slot compaction, extended colors and p
     'DC'
   );
   assert.deepEqual(readProject(writeProject(p)), p);
-  const zip = unzipSync(writeOrca(p));
+  const zip = unzipSync(write3MF(p));
+  assert.match(strFromU8(zip['3D/3dmodel.model']), /<metadata name="Application">STL Painter<\/metadata>/);
   assert.match(strFromU8(zip['3D/3dmodel.model']), /paint_color="480C83"/);
   assert.deepEqual(JSON.parse(strFromU8(zip['Metadata/project_settings.config'])).filament_colour, [
     p.palette[0],

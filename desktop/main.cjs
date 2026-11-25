@@ -9,7 +9,7 @@ let win,
   writing = false,
   closePending = false;
 const projectFilter = { name: 'Painter project', extensions: ['stlp'] };
-const exportFilter = { name: 'OrcaSlicer model', extensions: ['3mf'] };
+const exportFilter = { name: '3MF model', extensions: ['3mf'] };
 const clean = (name) =>
   String(name)
     .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
@@ -112,7 +112,7 @@ app.whenReady().then(() => {
       if (!dest) {
         const ext = project ? '.stlp' : '.3mf';
         const d = await dialog.showSaveDialog(win, {
-          title: project ? 'Save painter project' : 'Export for OrcaSlicer',
+          title: project ? 'Save painter project' : 'Export 3MF',
           defaultPath: (project && currentPath) || clean(name) + ext,
           filters: [project ? projectFilter : exportFilter],
         });
