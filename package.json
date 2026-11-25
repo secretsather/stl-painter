@@ -1,0 +1,50 @@
+{
+  "name": "stl-painter",
+  "version": "1.0.4",
+  "description": "Offline surface painting for STL models and OrcaSlicer",
+  "author": "STL Painter",
+  "private": true,
+  "type": "module",
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "npm run build && electron .",
+    "test": "node --test test/*.test.mjs",
+    "test:app": "npm run build && node test/app.mjs",
+    "dist": "npm run build && electron-builder --win nsis --x64",
+    "dist:portable": "npm run build && electron-builder --win zip --x64"
+  },
+  "build": {
+    "appId": "studio.stlpainter.desktop",
+    "productName": "STL Painter",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "desktop/**/*",
+      "dist/**/*",
+      "README.md",
+      "package.json"
+    ],
+    "win": {
+      "icon": "assets/icon.ico",
+      "artifactName": "STL-Painter-${version}-Windows-x64.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
+  },
+  "devDependencies": {
+    "electron": "^45.5.0",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
+    "fflate": "^0.8.3",
+    "lucide": "^1.80.0",
+    "playwright": "^1.65.1",
+    "three": "^0.187.0",
+    "three-mesh-bvh": "^0.10.0"
+  }
+}

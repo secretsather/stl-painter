@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; object-src 'none'; base-uri 'none'"
+    />
+    <title>STL Painter</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <div class="brand">
+        <span class="logo"
+          ><svg viewBox="0 0 32 32" aria-hidden="true">
+            <path d="m16 3 12 7-12 7-12-7z" fill="#d5f296" />
+            <path d="m4 14 10 6v9L4 23z" fill="#f5f9eb" />
+            <path d="m18 20 10-6v9l-10 6z" fill="#9dbb86" /></svg></span
+        >STL Painter
+      </div>
+      <span class="header-rule"></span><span id="docname">Fluted vessel</span
+      ><span id="dirty" title="Unsaved changes" hidden>●</span>
+      <div class="header-actions">
+        <button id="open"><i data-lucide="folder-open"></i>Open</button>
+        <div class="save-group">
+          <button id="save"><i data-lucide="save"></i>Save</button
+          ><button id="save-as" class="icon" title="Save project as…">
+            <i data-lucide="ellipsis"></i>
+          </button>
+        </div>
+        <button id="export" class="primary"><i data-lucide="box"></i>Export (3MF)</button>
+      </div>
+    </header>
+    <main>
+      <section id="viewport" aria-label="3D painting viewport">
+        <div id="stamp-outline" aria-hidden="true" hidden></div>
+        <div class="model-label">
+          <span class="eyebrow" id="model-kind">SAMPLE MODEL</span>
+          <h1 id="model-name">Fluted vessel</h1>
+          <span id="dimensions" role="group" aria-label="Model dimensions in X, Y, Z order"><span class="axis-X"></span> × <span class="axis-Y"></span> × <span class="axis-Z"></span> mm</span>
+        </div>
+        <svg id="view-cube" viewBox="-60 -60 120 120" role="group" aria-label="View cube"></svg>
+        <nav class="toolrail" aria-label="Paint tools">
+          <button data-tool="Brush" title="Brush (B)" aria-label="Brush">
+            <i data-lucide="paintbrush"></i>
+          </button>
+          <button data-tool="Fill" title="Fill (F)" aria-label="Fill">
+            <i data-lucide="paint-bucket"></i>
+          </button>
+          <button data-tool="Eraser" title="Eraser (E)" aria-label="Eraser">
+            <i data-lucide="eraser"></i>
+          </button>
+          <button data-tool="Stamps" title="Stamps (S)" aria-label="Stamps">
+            <i data-lucide="stamp"></i>
+          </button>
+          <button data-tool="Text" title="Text (T)" aria-label="Text"><i data-lucide="type"></i></button>
+          <span></span
+          ><button id="undo" title="Undo (Ctrl+Z)" aria-label="Undo">
+            <i data-lucide="undo-2"></i></button
+          ><button id="redo" title="Redo (Ctrl+Y)" aria-label="Redo">
+            <i data-lucide="redo-2"></i>
+          </button>
+        </nav>
+        <div id="pointer" hidden></div>
+        <button id="slice-status" popovertarget="slice-details" title="View slice colors and change the limit">
+          <i data-lucide="triangle-alert" aria-hidden="true"></i>
+          <span id="slice-status-label" aria-live="polite">Slice colors</span>
+        </button>
+        <div id="slice-details" popover>
+          <div class="color-limit-setting">
+            <label for="color-limit">Colors per horizontal slice</label>
+            <select id="color-limit" aria-describedby="color-limit-help"><option value="0">Off</option></select>
+          </div>
+          <div id="color-limit-report" role="status">
+            <span id="color-limit-summary"></span>
+            <div id="color-limit-colors"></div>
+          </div>
+        </div>
+        <div class="viewbar">
+          <i data-lucide="orbit"></i
+          ><select id="view" title="Camera view" aria-label="Camera view">
+            <option>Studio</option>
+            <option>Front</option>
+            <option>Top</option>
+            <option>Right</option>
+            <option>Left</option>
+            <option>Back</option>
+            <option>Bottom</option>
+            <option disabled>Custom</option></select
+          ><span></span>
+          <button id="projection" title="Toggle orthographic projection">Perspective</button
+          ><span></span
+          ><button id="fit" class="icon" title="Fit model (Home)" aria-label="Fit model">
+            <i data-lucide="scan"></i>
+          </button>
+        </div>
+        <button
+          id="help"
+          class="round"
+          title="Controls and shortcuts"
+          aria-label="Controls and shortcuts"
+        >
+          <i data-lucide="circle-help"></i>
+        </button>
+        <div id="busy" hidden><span>Preparing surface…</span></div>
+      </section>
+      <div id="sidebar-divider" role="separator" tabindex="0" aria-label="Resize painting sidebar"
+        aria-orientation="vertical" aria-controls="painting-sidebar"
+        title="Drag to resize the sidebar. Double-click to reset."></div>
+      <aside id="painting-sidebar" aria-label="Painting controls">
+        <div class="inspector-body">
+          <section class="panel">
+            <div class="section-head">
+              <h2>Palette</h2>
+              <button id="add-color" class="small-icon" title="Add color" aria-label="Add color">
+                <i data-lucide="plus"></i>
+              </button>
+            </div>
+            <div id="palette"></div>
+          </section>
+          <section class="panel tool-panel">
+            <div class="section-head">
+              <h2 id="tool-title">Brush</h2>
+              <kbd id="tool-key">B</kbd>
+            </div>
+            <div id="brush-panel">
+              <label class="control-label" for="brush-size"
+                >Diameter <output id="brush-value">32 px</output></label
+              ><input type="range" id="brush-size" min="2" max="160" value="32" />
+              <label class="check"><input type="checkbox" id="refine-edges" checked />Refine stroke edges</label>
+            </div>
+            <div id="fill-panel" hidden>
+              <label class="control-label" for="angle"
+                >Edge angle <output id="angle-value">35°</output></label
+              ><input type="range" id="angle" min="0" max="180" value="35" />
+              <label class="check"
+                ><input id="protect" type="checkbox" checked />Respect paint boundaries</label
+              >
+            </div>
+            <div id="stamp-panel" hidden>
+              <button id="import-image" class="wide">
+                <i data-lucide="image-plus"></i>Import artwork</button
+              ><input
+                hidden
+                type="file"
+                id="image-input"
+                accept="image/png,image/jpeg,image/webp,image/bmp"
+              />
+              <div id="stamp-list"></div>
+            </div>
+            <div id="text-panel" hidden>
+              <label class="control-label" for="text-content">Text to paint</label>
+              <textarea id="text-content" rows="2" maxlength="240" placeholder="Enter your text" spellcheck="false" wrap="off"></textarea>
+              <label class="control-label" for="text-font">Font</label>
+              <select id="text-font">
+                <option>Segoe UI</option><option>Arial</option><option>Consolas</option>
+                <option>Georgia</option><option>Times New Roman</option><option>Verdana</option>
+              </select>
+              <div class="text-styles">
+                <label class="check"><input type="checkbox" id="text-bold" />Bold</label>
+                <label class="check"><input type="checkbox" id="text-italic" />Italic</label>
+              </div>
+              <label class="control-label" for="text-align">Line alignment</label>
+              <select id="text-align"><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select>
+              <label class="control-label" for="text-size">Font size <output id="text-size-value"></output></label>
+              <input type="range" id="text-size" min="6" max="180" value="36" />
+            </div>
+            <div id="placement" hidden>
+              <div id="stamp-width">
+                <label class="control-label" for="stamp-size"
+                  >Width <output id="stamp-size-value"></output></label
+                ><input id="stamp-size" type="range" min="12" max="1200" value="160" />
+              </div>
+              <label class="control-label" for="rotation"
+                >Rotation <output id="rotation-value">0°</output></label
+              ><input id="rotation" type="range" min="-180" max="180" value="0" />
+              <label class="check"><input id="refine-stamp" type="checkbox" checked /><span id="refine-label">Refine stamp edges</span></label>
+              <label class="check"
+                ><input id="filter" type="checkbox" />Front-facing surfaces only</label
+              >
+              <div id="cutoff-wrap" hidden>
+                <label class="control-label" for="cutoff"
+                  >Cutoff angle <output id="cutoff-value">45°</output></label
+                ><input id="cutoff" type="range" min="0" max="90" value="45" />
+              </div>
+              <button id="apply" class="primary wide">
+                <i data-lucide="check"></i><span id="apply-label">Apply stamp</span>
+              </button>
+            </div>
+            <p id="tool-hint" class="hint"></p>
+          </section>
+        </div>
+      </aside>
+    </main>
+    <footer>
+      <span class="status-dot"></span><span id="status" role="status">Ready</span
+      ><span id="faces"></span>
+    </footer>
+    <dialog id="remove-color-dialog" aria-labelledby="remove-color-title">
+      <form method="dialog">
+        <h2 id="remove-color-title"></h2>
+        <p id="remove-color-description"></p>
+        <label class="control-label" for="replacement-color">Replace with</label>
+        <select id="replacement-color"></select>
+        <div class="dialog-actions">
+          <button value="cancel" autofocus>Cancel</button>
+          <button value="remove" class="primary">Replace and remove</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="mapping">
+      <form method="dialog">
+        <div class="dialog-head">
+          <h2>Import stamp</h2>
+          <button value="cancel" class="icon" aria-label="Cancel"><i data-lucide="x"></i></button>
+        </div>
+        <div class="preview-heading">
+          <p id="image-name"></p>
+          <button id="fit-artwork" type="button" title="Fit the whole stamp in the preview">Fit image</button>
+        </div>
+        <span id="preview-controls" hidden>Scroll or press plus and minus to zoom. Drag or use the arrow keys to pan.</span>
+        <div id="mapping-preview" class="checker" tabindex="0" role="group" aria-label="Stamp preview" aria-describedby="preview-controls"></div>
+        <label class="control-label" for="stamp-opacity">Opacity cutoff <output id="stamp-opacity-value" for="stamp-opacity">50%</output></label>
+        <input id="stamp-opacity" type="range" min="0" max="100" value="50" />
+        <label class="check removed-pixels"><input id="show-removed" type="checkbox" />Show removed pixels</label>
+        <p id="empty-mask" class="hint" role="status" hidden>Lower the cutoff to include some of the artwork.</p>
+        <label class="control-label" for="mapping-mode">Palette mapping</label
+        ><select id="mapping-mode">
+          <option value="existing">Use existing colors</option>
+          <option value="add">Add colors from image</option>
+        </select>
+        <div id="limit-row" hidden>
+          <label class="control-label" for="limit"
+            >Maximum new colors <output id="limit-value">3</output></label
+          ><input id="limit" type="range" min="1" max="15" value="3" />
+        </div>
+        <div id="mapped-colors"></div>
+        <div class="dialog-actions">
+          <button value="cancel">Cancel</button
+          ><button value="import" id="confirm-import" class="primary">Add to stamps</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="guide">
+      <form method="dialog">
+        <div class="dialog-head">
+          <h2>Workspace guide</h2>
+          <button class="icon" aria-label="Close"><i data-lucide="x"></i></button>
+        </div>
+        <p class="hint">
+          Open an STL to start your own model. Save a painter project to keep editing.
+        </p>
+        <p id="color-limit-help" class="hint">
+          Click Slice colors in the lower-left of the 3D view to set the allowed colors per slice.
+          The slice color check counts painted surface colors at each height above the model bottom.
+          A warning lists the colors at an example height where the most colors meet.
+        </p>
+        <dl>
+          <dt>Paint or position stamps and text</dt>
+          <dd>Left drag</dd>
+          <dt>Orbit / pan</dt>
+          <dd>Right / middle drag</dd>
+          <dt>Zoom / fit model</dt>
+          <dd>Wheel / Home</dd>
+          <dt>Brush / Fill / Eraser / Stamps / Text</dt>
+          <dd>B / F / E / S / T</dd>
+          <dt>Brush diameter</dt>
+          <dd>[ &nbsp; ]</dd>
+          <dt>Apply positioned stamp or text</dt>
+          <dd>Enter</dd>
+          <dt>Cancel stamp or text placement and return to Brush</dt>
+          <dd>Esc</dd>
+          <dt>Undo / redo</dt>
+          <dd>Ctrl Z / Ctrl Y</dd>
+          <dt>Open / save / save as</dt>
+          <dd>Ctrl O / S / Shift S</dd>
+        </dl>
+        <button class="primary wide">Done</button>
+      </form>
+    </dialog>
+    <dialog id="notice">
+      <form method="dialog">
+        <h2>STL Painter</h2>
+        <p id="notice-text"></p>
+        <button class="primary wide">OK</button>
+      </form>
+    </dialog>
+    <script src="app.js" defer></script>
+  </body>
+</html>

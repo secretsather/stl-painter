@@ -1,0 +1,21 @@
+node_modules/
+dist/
+release/
+.local/
+
+# Windows distribution artifacts copied outside the release directory.
+STL-Painter-*-Windows-x64.zip
+STL-Painter-*-Windows-x64.exe
+STL-Painter-*-Windows-x64/
+win-unpacked/
+builder-debug.yml
+
+# Machine-local configuration and logs.
+.env
+.env.*
+!.env.example
+*.log
+Thumbs.db
+Desktop.ini
+.DS_Store
+
