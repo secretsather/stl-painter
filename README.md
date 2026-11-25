@@ -6,11 +6,9 @@ STL Painter is an offline Windows desktop app for preparing multicolor 3D prints
 
 ## Install on Windows
 
-Use **64-bit Windows** with graphics support for WebGL 2. The portable build includes the app and its runtime.
+Use **64-bit Windows** with graphics support for WebGL 2. To try the current public version, follow [Run from source](#run-from-source). The first public Windows ZIP is still pending. You can check for downloads on the [Releases page](https://github.com/secretsather/stl-painter/releases).
 
-1. In the repository’s **Releases** section, look under **Assets** for the STL Painter ZIP ending in `Windows-x64.zip`. If you already have a portable test ZIP, start with that. If a build is unavailable, follow [Run from source](#run-from-source).
-2. Right-click the ZIP, choose **Extract All**, and open the extracted folder.
-3. Double-click **STL Painter.exe**. Keep it with the accompanying files. The app opens with a fluted vessel you can paint immediately.
+If you already have a portable test ZIP, right-click it, choose **Extract All**, and open the extracted folder. Double-click **STL Painter.exe** and keep it with the accompanying files.
 
 Keep your saved projects in a separate folder. To update a portable copy, extract the new ZIP into its own folder and open your existing projects from there.
 
