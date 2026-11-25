@@ -1,6 +1,6 @@
 {
   "name": "stl-painter",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Offline surface painting for STL models and OrcaSlicer",
   "author": "STL Painter",
   "private": true,

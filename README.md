@@ -2,13 +2,17 @@
 
 STL Painter is an offline Windows desktop app for preparing multicolor 3D prints. Open an STL, paint the surface, add a logo or lettering, and export a color-painted 3MF for your slicer. Save a painter project if you want to come back and edit it later.
 
+**[Download STL Painter 1.0.5 for Windows (64-bit ZIP)](https://github.com/secretsather/stl-painter/releases/download/v1.0.5/STL-Painter-1.0.5-Windows-x64.zip)**
+
 ![STL Painter showing the sample fluted vessel with an orange surface and cream stripe, the view cube, and the four-color palette](assets/stl-painter-workspace.png)
 
 ## Install on Windows
 
-Use **64-bit Windows** with graphics support for WebGL 2. To try the current public version, follow [Run from source](#run-from-source). The first public Windows ZIP is still pending. You can check for downloads on the [Releases page](https://github.com/secretsather/stl-painter/releases).
+Use **64-bit Windows** with graphics support for WebGL 2.
 
-If you already have a portable test ZIP, right-click it, choose **Extract All**, and open the extracted folder. Double-click **STL Painter.exe** and keep it with the accompanying files.
+1. Download the Windows ZIP using the link above.
+2. Right-click the ZIP and choose **Extract All**.
+3. Open the extracted folder and double-click **STL Painter.exe**. Keep the executable with the accompanying files.
 
 Keep your saved projects in a separate folder. To update a portable copy, extract the new ZIP into its own folder and open your existing projects from there.
 
@@ -61,7 +65,7 @@ Click **Perspective** to switch to orthographic projection. Drag the left edge o
 
 ## Model and artwork limits
 
-- The current source supports **1,500,000 source triangles** and warns above **1,000,000**. The **1.0.5-beta.4 portable** supports up to **1,000,000**. Check the window title for the version you’re running.
+- STL Painter supports up to **1,500,000 source triangles** and warns before opening a model above **1,000,000**.
 - A stamp image can be up to **32 MB** and **16 megapixels**. Palette mapping samples up to **512 pixels** along the longest side. Each project has a **96 MB** embedded artwork budget.
 - Export preserves the usable source triangles and encodes the refined paint boundaries in the 3MF. Undo history lasts for the current editing session.
 
