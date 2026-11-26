@@ -1,11 +1,11 @@
+import { validColor, validatedPalette } from './palette-file.js';
 import { validSplits } from './paint-tree.js';
-import { exportFilaments, MAX_FILAMENTS, MAX_SWATCHES, mixHex, physicalSlots, validRecipe } from './mixes.js';
+import { exportFilaments, MAX_FILAMENTS, MAX_SWATCHES } from './mixes.js';
 import { Zip, ZipDeflate, zipSync, unzipSync, strToU8, strFromU8 } from 'fflate';
 import { checkFaceLimit, MAX_CELLS } from './mesh.js';
 
 const bytes = (a) => new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
 const json = (a) => strToU8(JSON.stringify(a));
-const validColor = (s) => typeof s === 'string' && /^#[\da-f]{6}$/i.test(s);
 export function writeProject(p) {
   const mixed = Object.keys(p.mixes ?? {}).length > 0;
   const files = {
@@ -47,14 +47,6 @@ function referencedVertices(vertices, faces) {
   return compact;
 }
 
-// Version 3 stored an arithmetic sRGB preview. If a calibrated preview lands
-// on an occupied hex, retain the old chip so both printable recipes survive.
-function legacyMixHex(palette, parts) {
-  const channels = [1, 3, 5].map(i => Math.round(parts.reduce((sum, part) =>
-    sum + parseInt(palette[part.slot].slice(i, i + 2), 16) * part.percent, 0) / 100));
-  return '#' + channels.map(c => c.toString(16).padStart(2, '0')).join('').toUpperCase();
-}
-
 export function readProject(input) {
   let total = 0;
   const files = unzipSync(input, {
@@ -83,27 +75,11 @@ export function readProject(input) {
   )
     fail();
   if (m.version >= 3) {
-    if (!m.mixes || typeof m.mixes !== 'object' || Array.isArray(m.mixes) ||
-        typeof m.hasSplits !== 'boolean' || m.mixes[0]) fail();
-    const physical = physicalSlots(m);
-    if (!physical.length || physical.length > MAX_FILAMENTS ||
-        new Set(m.palette.map(hex => hex.toUpperCase())).size !== m.palette.length) fail();
-    const occupied = new Set(m.palette.map(hex => hex.toUpperCase()));
+    if (typeof m.hasSplits !== 'boolean') fail();
     const selectedHex = typeof m.editingContext?.color === 'string' ? m.editingContext.color.toUpperCase() : '';
     const selectedSlot = m.palette.findIndex(hex => hex.toUpperCase() === selectedHex);
-    for (const [key, parts] of Object.entries(m.mixes)) {
-      const slot = Number(key);
-      if (!Number.isInteger(slot) || String(slot) !== key || slot < 1 || slot >= m.palette.length ||
-          !validRecipe(parts, physical)) fail();
-      const stored = m.palette[slot].toUpperCase(), calibrated = mixHex(m.palette, parts);
-      if (m.version === 4 && stored === calibrated) continue;
-      if (stored !== legacyMixHex(m.palette, parts)) fail();
-      if (m.version === 3 && !occupied.has(calibrated)) {
-        occupied.delete(stored);
-        occupied.add(calibrated);
-        m.palette[slot] = calibrated;
-      }
-    }
+    try { Object.assign(m, validatedPalette(m, m.version === 3)); }
+    catch { fail(); }
     if (selectedSlot >= 0) m.editingContext.color = m.palette[selectedSlot];
   }
   const typed = (key, Type) => {

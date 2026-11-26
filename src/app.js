@@ -25,13 +25,15 @@ import { setupSidebar } from './sidebar.js';
 import { setupImportPreview } from './import-preview.js';
 import { RefinedStroke } from './refined-stroke.js';
 import { applyLeafEdits } from './paint-tree.js';
-import { sampleProject, flood, binarySTLFaceCount, checkFaceLimit, LARGE_MODEL_FACES } from './mesh.js';
+import { sampleProject, binarySTLFaceCount, checkFaceLimit, LARGE_MODEL_FACES } from './mesh.js';
+import { FillPreview, drawFillPreview } from './fill-preview.js';
 import { modelJob, FillJobs } from './model-job.js';
 import { textArtwork, loadFontFamilies } from './text-artwork.js';
 import { setupColorLimit } from './color-limit.js';
 import { stampCanvas, loadArtwork } from './stamps.js';
 import { MAX_FILAMENTS, MAX_SWATCHES, physicalSlots, filamentMasks, mixHex, recipeLabel, suggestFilament } from './mixes.js';
 import { chooseMix } from './mix-editor.js';
+import { paletteMapping, readPalette, writePalette } from './palette-file.js';
 
 const $ = (id) => document.getElementById(id),
   all = (q) => [...document.querySelectorAll(q)];
@@ -167,6 +169,7 @@ function hasPreview() {
   return !!(refinedPreview?.edits.size || preview.size);
 }
 function clearPreview() {
+  clearFillHover();
   $('stamp-outline').hidden = true;
   if (refinedPreview) {
     v.clearPaintPreview();
@@ -311,6 +314,7 @@ function undo(redo = false) {
   notify((redo ? 'Redid ' : 'Undid ') + h.label.toLowerCase());
   if (h.scope === 'paint') paintRevision++;
   if (h.scope !== 'library') refreshColorLimit();
+  scheduleFillHover();
 }
 function removeButton(label, action) {
   const button = document.createElement('button');
@@ -389,6 +393,7 @@ function paletteUI() {
     b.onclick = () => {
       document.querySelector('.swatch-row [aria-pressed="true"]')?.setAttribute('aria-pressed', 'false');
       selected = i;
+      refreshFillHover();
       if (tool === 'Text') armPreview();
       b.setAttribute('aria-pressed', 'true');
     };
@@ -488,7 +493,7 @@ function updatePlacementVisibility() {
 }
 const hints = {
   Brush: 'Drag across the visible surface to paint.',
-  Fill: 'Click a region to fill across connected edges.',
+  Fill: 'Hover to preview. Use [ and ] to adjust the edge angle. Click to fill.',
   Eraser: 'Drag to expose the current base color.',
   Text: 'Click or drag to position your text. Press Esc to cancel and return to Brush.',
   Stamps: 'Click or drag to position the stamp. Press Esc to cancel and return to Brush.',
@@ -515,10 +520,34 @@ function toolUI() {
   $('apply').disabled = !hasPreview();
 }
 let fillJobs;
+const fillLayer = $('fill-highlight').firstElementChild;
+const fillPreview = new FillPreview(findFillRegion, mask =>
+  drawFillPreview(fillLayer, v, mask, p.paint, selected, p.palette[selected]));
+let fillPoint, fillFrame = 0;
+function clearFillHover() {
+  cancelAnimationFrame(fillFrame);
+  fillFrame = 0;
+  fillPreview.clear();
+}
+function fillSeed(point) {
+  const seed = v.pick(point.x, point.y);
+  return $('protect').checked && p.paint[seed] === selected ? -1 : seed;
+}
+function scheduleFillHover() {
+  if (!fillPoint || tool !== 'Fill' || busy || pickingFace || fillFrame) return;
+  fillFrame = requestAnimationFrame(() => {
+    fillFrame = 0;
+    fillPreview.hover(fillPoint ? fillSeed(fillPoint) : -1);
+  });
+}
+function refreshFillHover() {
+  clearFillHover();
+  scheduleFillHover();
+}
 function prepareFill() {
   const surface = v.surface;
   const jobs = fillJobs ??= new FillJobs();
-  surface.graphJob ??= jobs.get(p, v).then(graph => { surface.graph = graph; }).catch(error => {
+  surface.graphJob ??= jobs.prepare(p, v).catch(error => {
     delete surface.graphJob;
     if (fillJobs === jobs) {
       jobs.close();
@@ -527,6 +556,46 @@ function prepareFill() {
     throw error;
   });
   return surface.graphJob;
+}
+async function findFillRegion(seed) {
+  const surface = v.surface, angle = +$('angle').value, protect = $('protect').checked;
+  await prepareFill();
+  if (v.surface !== surface) return null;
+  const jobs = fillJobs;
+  try {
+    return await jobs.region(p.paint, paintRevision, seed, angle, protect);
+  } catch (error) {
+    if (fillJobs === jobs) {
+      delete surface.graphJob;
+      jobs.close();
+      fillJobs = null;
+    }
+    throw error;
+  }
+}
+function applyFill(mask) {
+  if (!mask) return;
+  const color = selected;
+  let count = 0;
+  for (let i = 0; i < mask.length; i++) if (mask[i] && p.paint[i] !== color) count++;
+  if (!count) return;
+  const ids = new Uint32Array(count), before = new Uint8Array(count);
+  for (let i = 0, n = 0; i < mask.length; i++) {
+    if (!mask[i] || p.paint[i] === color) continue;
+    ids[n] = i;
+    before[n++] = p.paint[i];
+  }
+  const change = forward => {
+    for (let n = 0; n < count; n++) {
+      const id = ids[n];
+      p.paint[id] = forward ? color : before[n];
+      v.color(id, p.paint[id]);
+    }
+    v.recolor();
+  };
+  refreshColorLimit.beforeStroke();
+  change(true);
+  record('Filled region', change, ids.byteLength + before.byteLength);
 }
 function chooseTool(name) {
   if (pickingFace) setFacePicking(false);
@@ -544,6 +613,7 @@ function chooseTool(name) {
   toolUI();
   if (tool === 'Text') $('text-content').focus();
   schedulePreview();
+  scheduleFillHover();
 }
 function load(project, kind, documentName = project.name, prepared) {
   if (pickingFace) setFacePicking(false);
@@ -586,6 +656,7 @@ function load(project, kind, documentName = project.name, prepared) {
 async function task(message, fn) {
   if (busy) return false;
   busy = true;
+  clearFillHover();
   finishStroke();
   $('busy').firstElementChild.textContent = message;
   $('busy').hidden = false;
@@ -600,6 +671,7 @@ async function task(message, fn) {
     busy = false;
     $('busy').hidden = true;
     for (const el of document.querySelectorAll('header,aside,nav,.viewbar')) el.inert = false;
+    scheduleFillHover();
   }
 }
 async function write(kind) {
@@ -669,6 +741,22 @@ function openModel(selectFile) {
 $('open').onclick = () => openModel(files.open);
 $('save').onclick = () => task('Saving project…', () => write('save'));
 $('save-as').onclick = () => task('Saving project as…', () => write('saveAs'));
+$('save-palette').onclick = () => task('Saving palette…', async () => {
+  const data = writePalette(p);
+  if (!await files.chooseWrite('palette', p.name)) return;
+  const name = await files.write(data);
+  notify('Saved palette ' + name);
+});
+$('load-palette').onclick = () => task('Loading palette…', async () => {
+  const file = await files.openPalette();
+  if (!file) return;
+  const next = readPalette(file.text);
+  if (writePalette(next) === writePalette(p)) {
+    notify('Already using the colors in ' + file.name);
+    return;
+  }
+  replacePalette('Loaded palette ' + file.name, next.palette, next.mixes, paletteMapping(p.palette, next.palette));
+});
 $('export').onclick = () => task('Preparing 3MF export…', () => write('export'));
 files.onClose(() => task('Closing project…', async () => (await prepareToLeave()) !== 'cancel'));
 $('undo').onclick = () => undo();
@@ -765,9 +853,8 @@ function requestColorRemoval(id) {
 
 function removePaletteColor(id, replacement, dependent = []) {
   if (p.palette.length <= 1 || id === replacement) return;
-  const previousSelection = selected;
   const name = swatchName(id);
-  const original = p.palette.slice();
+  const original = p.palette;
   const removed = new Set([id, ...dependent]);
   const kept = original.map((_, index) => index).filter(index => !removed.has(index));
   if (id === 0) {
@@ -780,6 +867,12 @@ function removePaletteColor(id, replacement, dependent = []) {
   for (const index of kept) {
     if (beforeMixes[index]) afterMixes[slots[index]] = beforeMixes[index].map(part => ({ ...part, slot: slots[part.slot] }));
   }
+  replacePalette('Removed ' + name, remaining, afterMixes, slots);
+  document.querySelector('.swatch-row [aria-pressed="true"]')?.focus({ preventScroll: true });
+}
+
+function replacePalette(label, remaining, afterMixes, slots) {
+  const original = p.palette.slice(), beforeMixes = p.mixes ?? {}, previousSelection = selected;
   const remap = (index) => index === 255 ? 255 : slots[index];
   // Preserve the original arrays so undo can separate the merged colors again.
   const updates = [];
@@ -802,11 +895,10 @@ function removePaletteColor(id, replacement, dependent = []) {
   };
   clearPreview();
   change(true);
-  record('Removed ' + name, change, weight, 'palette');
+  record(label, change, weight, 'palette');
   paletteUI();
   stampUI();
   schedulePreview();
-  document.querySelector('.swatch-row [aria-pressed="true"]')?.focus({ preventScroll: true });
 }
 
 function editPaletteColor(id, next) {
@@ -940,6 +1032,8 @@ refineStamp.onchange = () => {
 };
 $('text-panel').addEventListener('input', armPreview);
 range('angle', 'angle-value', '°');
+$('angle').addEventListener('input', refreshFillHover);
+$('protect').addEventListener('change', refreshFillHover);
 range('rotation', 'rotation-value', '°', true);
 range('cutoff', 'cutoff-value', '°', true);
 $('filter').onchange = () => {
@@ -950,6 +1044,7 @@ $('filter').onchange = () => {
 $('help').onclick = () => $('guide').showModal();
 function setFacePicking(active) {
   pickingFace = active;
+  refreshFillHover();
   $('align-face').setAttribute('aria-pressed', String(active));
   $('pointer').hidden = true;
   notify(active ? 'Click a model face to align the camera. Esc cancels.' : 'Ready');
@@ -1152,6 +1247,8 @@ function bindCanvas() {
   canvas.addEventListener('pointerdown', (e) => {
     if (busy || pointerId !== null) return;
     if (e.button !== 0) {
+      fillPoint = null;
+      clearFillHover();
       $('pointer').hidden = true;
       return;
     }
@@ -1168,17 +1265,11 @@ function bindCanvas() {
     pointerId = e.pointerId;
     canvas.setPointerCapture(e.pointerId);
     if (tool === 'Fill') {
-      const seed = v.pick(pt.x, pt.y);
-      const protect = $('protect').checked, angle = +$('angle').value;
-      if (seed < 0 || (protect && p.paint[seed] === selected)) return;
-      const fill = () => {
-        stroke = { old: new Map(), label: 'Filled region' };
-        for (const id of flood(p, v.surface, seed, angle, protect)) setColor(id, selected);
-        v.recolor();
-        finishStroke();
-      };
-      if (v.surface.graph) fill();
-      else task('Preparing fill…', async () => { await prepareFill(); fill(); });
+      const seed = fillSeed(pt), cached = fillPreview.mask;
+      clearFillHover();
+      if (seed < 0) return;
+      if (cached?.[seed]) applyFill(cached);
+      else task('Preparing fill…', async () => applyFill(await findFillRegion(seed)));
     } else if (placingArtwork()) {
       draggingArtwork = true;
       $('apply').disabled = true;
@@ -1195,8 +1286,10 @@ function bindCanvas() {
     }
   });
   canvas.addEventListener('pointermove', (e) => {
-    if (busy) return;
     const pt = point(e);
+    fillPoint = !e.buttons && e.pointerType !== 'touch' ? pt : null;
+    if (busy) return;
+    scheduleFillHover();
     if (e.buttons && !(e.buttons & 1)) {
       return;
     }
@@ -1212,6 +1305,10 @@ function bindCanvas() {
     }
   });
   function end(e) {
+    if (e.type === 'pointerup' && !e.buttons && e.pointerType !== 'touch' && canvas.matches(':hover')) {
+      fillPoint = point(e);
+      scheduleFillHover();
+    }
     if (e.pointerId !== undefined && e.pointerId !== pointerId) return;
     if (draggingArtwork) {
       if (e.type === 'pointerup') anchor = point(e);
@@ -1226,9 +1323,15 @@ function bindCanvas() {
   canvas.addEventListener('pointercancel', end);
   canvas.addEventListener('lostpointercapture', end);
   canvas.addEventListener('pointerleave', () => {
+    fillPoint = null;
+    clearFillHover();
     $('pointer').hidden = true;
   });
-  window.addEventListener('blur', end);
+  window.addEventListener('blur', e => {
+    fillPoint = null;
+    clearFillHover();
+    end(e);
+  });
 }
 window.addEventListener('keydown', (e) => {
   if (busy || e.isComposing || document.querySelector('dialog[open], #slice-details:popover-open')) return;
@@ -1261,6 +1364,15 @@ window.addEventListener('keydown', (e) => {
     }
     return;
   }
+  if (tool === 'Fill' && !e.altKey && (k === '[' || k === ']') &&
+      !e.target.isContentEditable && !e.target.matches('input:not([type=range],[type=checkbox])')) {
+    e.preventDefault();
+    const angle = $('angle'), previous = angle.value;
+    if (k === '[') angle.stepDown(5);
+    else angle.stepUp(5);
+    if (angle.value !== previous) angle.dispatchEvent(new Event('input', { bubbles: true }));
+    return;
+  }
   if (e.target.matches('input,select') && !e.target.matches('input[type=range]')) return;
   if ('bfest'.includes(k) && k.length === 1) {
     e.preventDefault();
@@ -1275,12 +1387,13 @@ window.addEventListener('keydown', (e) => {
     if (previewFrame && !draggingArtwork) updatePreview();
     $('apply').click();
   }
-  if (k === '[' || k === ']') {
+  if (tool !== 'Fill' && (k === '[' || k === ']')) {
     sizes.brush.step(k === '[' ? -1 : 1);
   }
 });
 async function start() {
   v = new Viewport($('viewport'), (view) => {
+    refreshFillHover();
     $('view').value = view;
     refreshBrushCursor();
     schedulePreview();

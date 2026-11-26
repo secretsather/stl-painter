@@ -76,6 +76,74 @@ test('Clear all paint resets every leaf to the custom base and supports one-step
   assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, cleared.paint);
 });
 
+test('a saved palette can be loaded into a painted project and undone in one step', async t => {
+  const { app, page, click, dir, projectFile } = await desktop(t);
+  const palettePath = path.join(dir, 'Workshop.stlpalette');
+  const donor = readSTL(fixture(), 'Donor.stl');
+  donor.palette = ['#EEEEEE', '#FF0000', '#0000FF'];
+  donor.mixes = { 3: [{ slot: 1, percent: 33 }, { slot: 2, percent: 67 }] };
+  donor.palette.push(mixHex(donor.palette, donor.mixes[3]));
+  await fs.writeFile(projectFile, writeProject(donor));
+  await click('open');
+  await app.evaluate(({ dialog }, file) => {
+    dialog.showSaveDialog = async (_, options) => {
+      if (options.filters[0].extensions[0] !== 'stlpalette') throw Error('Unexpected destination');
+      return { canceled: false, filePath: file };
+    };
+  }, palettePath);
+  await click('save-palette');
+  const savedPalette = await fs.readFile(palettePath, 'utf8');
+  assert.deepEqual(JSON.parse(savedPalette).mixes, donor.mixes);
+  assert.ok(await page.locator('#dirty').isHidden());
+
+  const receiverPath = path.join(dir, 'Receiver.stlp');
+  const receiver = readSTL(fixture(), 'Slab.stl');
+  receiver.palette = ['#111111', '#0000FE', donor.palette[3], '#FF0000'];
+  receiver.paint.set([0, 1, 2, 3]);
+  receiver.stamps = [{ name: 'Logo', width: 4, height: 1, pixels: Uint8Array.of(255, 1, 2, 3),
+    source: Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII=', 'base64')) }];
+  await fs.writeFile(receiverPath, writeProject(receiver));
+  await app.evaluate((_, file) => { global.openFixture = file; }, receiverPath);
+  await click('open');
+  await app.evaluate((_, file) => { global.openFixture = file; }, palettePath);
+  await click('load-palette');
+  assert.equal(await page.locator('#docname').textContent(), 'Receiver.stlp');
+  assert.ok(await page.locator('#dirty').isVisible());
+  await click('save-palette');
+  assert.ok(await page.locator('#dirty').isVisible());
+  await click('save');
+  const result = readProject(await fs.readFile(receiverPath));
+  assert.deepEqual(result.palette, donor.palette);
+  assert.deepEqual(result.mixes, donor.mixes);
+  assert.deepEqual(result.paint, receiver.paint.map(slot => [0, 2, 3, 1][slot]));
+  assert.deepEqual(result.stamps[0].pixels, Uint8Array.of(255, 2, 3, 1));
+  assert.equal(await fs.readFile(palettePath, 'utf8'), savedPalette);
+
+  await click('load-palette');
+  assert.ok(await page.locator('#dirty').isHidden());
+  await click('undo');
+  await click('save');
+  const undone = readProject(await fs.readFile(receiverPath));
+  assert.deepEqual(undone.paint, receiver.paint);
+  assert.deepEqual(undone.palette, receiver.palette);
+  assert.deepEqual(undone.stamps, receiver.stamps);
+  await click('redo');
+  await click('save');
+  assert.deepEqual(readProject(await fs.readFile(receiverPath)), result);
+
+  await fs.writeFile(palettePath, '{}');
+  await click('load-palette');
+  await page.locator('#notice[open] button').click();
+  assert.ok(await page.locator('#dirty').isHidden());
+  await app.evaluate(({ dialog }) => {
+    dialog.showOpenDialog = dialog.showSaveDialog = async () => ({ canceled: true });
+  });
+  await click('load-palette');
+  await click('save-palette');
+  assert.ok(await page.locator('#dirty').isHidden());
+  assert.equal(await fs.readFile(palettePath, 'utf8'), '{}');
+});
+
 test('Save, Save As and Export show the matching file type and action', async (t) => {
   const { app, page, click } = await desktop(t);
   await app.evaluate(({ dialog }) => {
@@ -497,6 +565,74 @@ test('a discarded zero-area STL facet does not enlarge the usable model bounds',
   assert.deepEqual(model, readSTL(slab, path.basename(file)));
 });
 
+test('Fill hover and click agree across a painted bevel as angle and protection change', async t => {
+  const { page, click, projectFile } = await desktop(t);
+  const model = readSTL(fixture(), 'Bevel.stl');
+  model.depth.fill(0);
+  model.paint = new Uint8Array(model.depth.length);
+  model.paint.fill(1, 4, 6);
+  await fs.writeFile(projectFile, writeProject(model));
+  await click('open');
+  await page.locator('#view').selectOption('Top');
+  if (await page.locator('#projection').innerText() === 'Perspective') await click('projection');
+  await page.locator('[data-tool="Fill"]').click();
+  await page.getByRole('button', {name:'Color 3', exact:true}).click();
+  const box = await page.locator('#viewport > canvas').boundingBox();
+  const scale = box.height / (2 * Math.hypot(95, 52, 12) * 1.75 *
+    Math.max(1, box.height / box.width) * Math.tan(35 * Math.PI / 360));
+  const bevelX = Math.floor(box.width / 2 + (36 - 7.5) * scale), y = Math.floor(box.height / 2);
+  const centerX = Math.floor(box.width / 2);
+  await page.mouse.move(box.x + centerX, box.y + y);
+  async function checkBevel(included) {
+    await page.waitForFunction(({ bevelX, centerX, y, included }) => {
+      const layer = document.getElementById('fill-highlight');
+      if (layer.hidden) return false;
+      const ctx = layer.firstElementChild.getContext('2d');
+      return ctx.getImageData(centerX, y, 1, 1).data[3] > 0 &&
+        (ctx.getImageData(bevelX, y, 1, 1).data[3] > 0) === included;
+    }, { bevelX, centerX, y, included });
+  }
+  await checkBevel(false);
+  await page.locator('#protect').evaluate(el => el.click());
+  await checkBevel(true);
+  async function angle(value) {
+    await page.locator('#angle').evaluate((el, value) => {
+      el.value = value;
+      el.dispatchEvent(new Event('input'));
+    }, value);
+  }
+  const brushSize = await page.locator('#brush-size').inputValue();
+  await page.locator('#protect').focus();
+  await page.keyboard.press('[');
+  assert.equal(await page.locator('#angle-value').innerText(), '30°');
+  await page.keyboard.press('[');
+  assert.equal(await page.locator('#angle').inputValue(), '25');
+  await checkBevel(false);
+  await page.keyboard.press(']');
+  assert.equal(await page.locator('#angle-value').innerText(), '30°');
+  await checkBevel(true);
+  await angle(3);
+  await page.keyboard.press('[');
+  await page.keyboard.press('[');
+  assert.equal(await page.locator('#angle-value').innerText(), '0°');
+  await angle(178);
+  await page.keyboard.press(']');
+  await page.keyboard.press(']');
+  assert.equal(await page.locator('#angle-value').innerText(), '180°');
+  assert.equal(await page.locator('#brush-size').inputValue(), brushSize);
+  assert.ok(await page.locator('#dirty').isHidden());
+  await angle(35);
+  await checkBevel(true);
+  await page.mouse.click(box.x + centerX, box.y + y);
+  await click('save');
+  const expected = model.paint.slice();
+  expected.fill(2, 4, 8);
+  assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, expected);
+  await click('undo');
+  await click('save');
+  assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, model.paint);
+});
+
 test('large models warn above one million, open through 1.5 million, and reject larger files', async (t) => {
   const { app, page, click, dir, projectFile } = await desktop(t);
   const file = path.join(dir, 'Threshold grid.stl');
@@ -544,6 +680,32 @@ test('large models warn above one million, open through 1.5 million, and reject 
   const saved = readProject(await fs.readFile(projectFile));
   assert.equal(saved.depth.length, 1_500_000);
   assert.ok(saved.paint.length <= 1_600_000);
+  await page.locator('#view').selectOption('Top');
+  await page.evaluate(() => {
+    const post = Worker.prototype.postMessage;
+    window.fillSearches = 0;
+    Worker.prototype.postMessage = function(message, ...args) {
+      if ('seed' in message) window.fillSearches++;
+      return post.call(this, message, ...args);
+    };
+  });
+  await page.locator('[data-tool="Fill"]').click();
+  const canvas = await page.locator('#viewport > canvas').boundingBox();
+  const cx = canvas.x + canvas.width / 2, cy = canvas.y + canvas.height / 2;
+  const started = performance.now();
+  await page.mouse.move(cx, cy);
+  await page.locator('#fill-highlight').waitFor({ state: 'visible' });
+  t.diagnostic('First hover on the connected 1.5M-triangle grid: ' + Math.round(performance.now() - started) + ' ms');
+  await page.mouse.move(cx + 40, cy, { steps: 12 });
+  assert.ok(await page.locator('#dirty').isHidden());
+  assert.ok(await page.locator('#undo').isDisabled());
+  await page.mouse.click(cx + 40, cy);
+  assert.equal(await page.evaluate(() => window.fillSearches), 1, 'hover movement and click reuse the same region');
+  await click('save');
+  assert.ok(readProject(await fs.readFile(projectFile)).paint.every(slot => slot === 1));
+  await click('undo');
+  await click('save');
+  assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, saved.paint);
   await app.evaluate((_, dest) => { global.openFixture = dest; }, projectFile);
   await click('open');
   assert.equal(await page.locator('#model-kind').innerText(), 'PAINTER PROJECT');

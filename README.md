@@ -2,7 +2,7 @@
 
 STL Painter is an offline Windows desktop app for preparing multicolor 3D prints. Open an STL, paint the surface, add a logo or lettering, and export a color-painted 3MF for your slicer. Save a painter project if you want to come back and edit it later.
 
-**[Download STL Painter 1.0.11 for Windows (64-bit portable ZIP)](https://github.com/secretsather/stl-painter/releases/download/v1.0.11/STL-Painter-1.0.11-Windows-x64.zip)**
+**[Download STL Painter 1.0.12 for Windows (64-bit portable ZIP)](https://github.com/secretsather/stl-painter/releases/download/v1.0.12/STL-Painter-1.0.12-Windows-x64.zip)**
 
 ![STL Painter showing the sample fluted vessel with an orange surface and cream stripe, the view cube, and the four-color palette](assets/stl-painter-workspace.png)
 
@@ -15,6 +15,12 @@ Use **64-bit Windows** with graphics support for WebGL 2.
 3. Open the extracted folder and double-click **STL Painter.exe**. Keep the executable with the accompanying files.
 
 Keep your saved projects in a separate folder. To update a portable copy, extract the new ZIP into its own folder and open your existing projects from there.
+
+## What's new in 1.0.12
+
+- **Reuse a filament palette.** Choose **Save palette** to keep the base color, filaments, and mixed-color recipes in a `.stlpalette` file. Choose **Load palette** in another project to apply it. One **Undo** restores the previous palette and artwork.
+- **See where Fill will paint.** Press **F** and hover over the model. The highlight follows the current edge angle and paint-boundary setting. Click to fill the highlighted region.
+- **Adjust Fill without moving the mouse.** Press **[** to lower the edge angle by 5° or **]** to raise it by 5°. The preview updates under the pointer.
 
 ## What's new in 1.0.11
 
@@ -59,7 +65,7 @@ To paint straight onto an angled face, click **Align to face** in the camera too
 | Tool | How to use it |
 | --- | --- |
 | **Brush** | Drag to paint the visible surface. Set **Diameter** in pixels or millimeters. |
-| **Fill** | Click to fill across connected faces. **Edge angle** controls how sharp an edge the fill can cross. **Respect paint boundaries** stops the fill at an existing color change. |
+| **Fill** | Hover over a face to see which area will change. Click to fill the highlighted region with the selected color. **Edge angle** controls how sharp an edge the fill can cross. **Respect paint boundaries** stops the fill at an existing color change. |
 | **Eraser** | Drag to restore the base color. Brush and Eraser share the **Refine stroke edges** setting. |
 | **Stamps** | Select **Import artwork** for a PNG, JPEG, WebP, or BMP. Choose existing palette colors or add colors from the image, then click **Add to stamps**. Adjust width and rotation, drag into position, and click **Apply stamp**. |
 | **Text** | Type a label, choose an installed font and palette color, and set size, bold, italic, or multiline alignment. Position it and click **Apply text**. The project stores applied lettering as surface paint. |
@@ -73,6 +79,8 @@ To paint straight onto an angled face, click **Align to face** in the camera too
 **Reusing artwork.** When you return to Stamps, click an imported thumbnail to start a placement. The dotted outline shows its position, including over empty space in the viewport. Click **×** beside a stamp to remove it from the library. Copies already applied to the model keep their paint.
 
 ## Palette and printer color limits
+
+**Reuse a palette across projects.** Click **Save palette** (the disk beside the Palette heading) to save the base color, filaments, and mixed-color recipes to a `.stlpalette` file. In another project, click **Load palette** (the folder) and select that file. Base-colored areas use the new base. Painted areas and stamp pixels keep exact color matches wherever possible and otherwise use the closest available swatch. **Undo** restores the previous palette and color assignments in one step.
 
 **Palette** holds physical filaments. **Mixed colors** below it holds recipes. Click either heading to collapse or expand its list. Click **+** beside Mixed colors and choose **Two filaments** or **Three filaments**. Pair suggestions use 50/50, 33/67, and 67/33. Trio suggestions give one filament 34% and the other two 33%. Larger palettes show a selection of up to 90 swatches. Select a swatch to preview the recipe and click **Add mix** to keep it. Each filament must contribute at least 33%.
 
@@ -96,6 +104,7 @@ The limit defaults to four, accepts 1–16 or **Off**, and is remembered on this
 | Orbit / pan / zoom | Right-drag / middle-drag / scroll |
 | Fit the model in the studio view | Home |
 | Change brush or eraser diameter | [ and ] |
+| Decrease / increase the Fill edge angle by 5° while previewing | [ and ] |
 | Apply a positioned stamp or text from the viewport | Enter |
 | Cancel placement and return to Brush | Esc |
 | Undo / redo | Ctrl+Z / Ctrl+Y or Ctrl+Shift+Z |

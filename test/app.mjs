@@ -640,6 +640,25 @@ try {
   await chooseTool('Fill');
   await chooseColor(3);
   await range('angle', 35);
+  const highlight = page.locator('#fill-highlight');
+  const alphaAt = async (x, y) => highlight.locator('canvas').evaluate((canvas, [x, y]) => {
+    const rect = canvas.getBoundingClientRect();
+    return canvas.getContext('2d').getImageData(Math.floor(x - rect.x), Math.floor(y - rect.y), 1, 1).data[3];
+  }, point(x, y));
+  await page.mouse.move(...point(-27, -14));
+  await highlight.waitFor({ state: 'visible' });
+  assert.ok(await alphaAt(-27, -14), 'the region under the cursor is highlighted');
+  assert.equal(await alphaAt(51, 0), 0, 'the disconnected block is outside the preview');
+  assert.ok(await page.locator('#dirty').isHidden(), 'hover preserves the save point');
+  await page.mouse.move(...point(51, 0));
+  await page.waitForFunction(([x, y]) => {
+    const layer = document.querySelector('#fill-highlight'), canvas = layer.firstElementChild;
+    const rect = canvas.getBoundingClientRect();
+    return !layer.hidden && canvas.getContext('2d').getImageData(x-rect.x, y-rect.y, 1, 1).data[3] > 0;
+  }, point(51, 0));
+  assert.equal(await alphaAt(-27, -14), 0, 'crossing a gap clears the previous region');
+  await page.mouse.move(1, 1);
+  await highlight.waitFor({ state: 'hidden' });
   await page.mouse.click(...point(-27, -14));
   const protect = await save();
   const protectSurface = makeSurface(protect);

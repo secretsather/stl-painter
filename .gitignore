@@ -7,6 +7,7 @@ release/
 # User models, painter projects, exports, and temporary saves.
 *.[sS][tT][lL]
 *.[sS][tT][lL][pP]
+*.[sS][tT][lL][pP][aA][lL][eE][tT][tT][eE]
 *.3[mM][fF]
 .stlp-*.tmp
 

@@ -17,11 +17,19 @@ export class FillJobs {
       if (!job) return;
       this.pending.delete(data.id);
       if (data.error) job.reject(Error(data.error));
-      else job.resolve(data.graph);
+      else job.resolve(data.value);
     };
     this.worker.onerror = e => this.close(e.message);
   }
-  get(project, view) {
+  request(message, transfers = []) {
+    if (this.closed) return Promise.reject(Error(this.closed));
+    const id = ++this.sequence;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      this.worker.postMessage({ id, ...message }, transfers);
+    });
+  }
+  prepare(project, view) {
     const mesh = this.versions ? undefined : { faces: project.faces, depth: project.depth,
       vertices: { length: project.vertices.length } };
     const changes = [];
@@ -32,15 +40,18 @@ export class FillJobs {
       }
       return chunk.version;
     });
-    const id = ++this.sequence;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.worker.postMessage({ id, mesh, ranges: view.ranges, changes },
-        changes.flatMap(c => c.splits ? [c.splits.buffer] : []));
-      this.versions = versions;
-    });
+    this.versions = versions;
+    return this.request({ mesh, ranges: view.ranges, changes, owners: view.surface.owners,
+      normals: mesh && view.surface.normals }, changes.flatMap(c => c.splits ? [c.splits.buffer] : []));
+  }
+  region(paint, revision, seed, angle, protect) {
+    const changed = this.paint !== paint || this.revision !== revision;
+    this.paint = paint;
+    this.revision = revision;
+    return this.request({ seed, angle, protect, paint: changed ? paint : undefined });
   }
   close(reason = 'Project changed.') {
+    this.closed = reason;
     this.worker.terminate();
     for (const job of this.pending.values()) job.reject(Error(reason));
     this.pending.clear();

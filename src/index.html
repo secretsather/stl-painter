@@ -35,6 +35,7 @@
     </header>
     <main>
       <section id="viewport" aria-label="3D painting viewport">
+        <div id="fill-highlight" aria-hidden="true" hidden><canvas></canvas></div>
         <div id="stamp-outline" aria-hidden="true" hidden></div>
         <div class="model-label">
           <span class="eyebrow" id="model-kind"></span>
@@ -116,9 +117,11 @@
           <section class="panel">
             <div class="section-head">
               <h2><button class="panel-toggle" aria-expanded="true" aria-controls="palette">Palette</button></h2>
-              <button id="add-color" class="small-icon" title="Add color" aria-label="Add color">
-                <i data-lucide="plus"></i>
-              </button>
+              <div class="palette-actions">
+                <button id="load-palette" class="small-icon" title="Load palette" aria-label="Load palette"><i data-lucide="folder-open"></i></button>
+                <button id="save-palette" class="small-icon" title="Save palette" aria-label="Save palette"><i data-lucide="save"></i></button>
+                <button id="add-color" class="small-icon" title="Add color" aria-label="Add color"><i data-lucide="plus"></i></button>
+              </div>
             </div>
             <div id="palette"></div>
           </section>
@@ -148,7 +151,7 @@
             <div id="fill-panel" hidden>
               <label class="control-label" for="angle"
                 >Edge angle <output id="angle-value">35°</output></label
-              ><input type="range" id="angle" min="0" max="180" value="35" />
+              ><input type="range" id="angle" min="0" max="180" value="35" aria-keyshortcuts="[ ]" />
               <label class="check"
                 ><input id="protect" type="checkbox" checked />Respect paint boundaries</label
               >
@@ -310,6 +313,8 @@
           <dt>Brush / Fill / Eraser / Stamps / Text</dt>
           <dd>B / F / E / S / T</dd>
           <dt>Brush diameter</dt>
+          <dd>[ &nbsp; ]</dd>
+          <dt>Decrease / increase Fill edge angle by 5°</dt>
           <dd>[ &nbsp; ]</dd>
           <dt>Apply positioned stamp or text</dt>
           <dd>Enter</dd>

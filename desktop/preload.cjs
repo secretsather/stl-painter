@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('painterFiles', {
   open: () => ipcRenderer.invoke('open'),
+  openPalette: () => ipcRenderer.invoke('open-palette'),
   openLaunchFile: () => ipcRenderer.invoke('open-launch-file'),
   readPendingProject: () => ipcRenderer.invoke('read-pending-project'),
   accept: () => ipcRenderer.invoke('accept'),

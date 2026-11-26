@@ -10,6 +10,8 @@ let win,
   writing = false,
   closePending = false;
 const projectFilter = { name: 'Painter project', extensions: ['stlp'] };
+const paletteFilter = { name: 'STL Painter palette', extensions: ['stlpalette'] };
+const maxPaletteBytes = 256 * 1024;
 const exportFilter = { name: '3MF model', extensions: ['3mf'] };
 const clean = (name) =>
   String(name)
@@ -103,6 +105,15 @@ app.whenReady().then(() => {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   win.once('ready-to-show', () => win.show());
+  register('open-palette', async () => {
+    const result = await dialog.showOpenDialog(win, {
+      title: 'Load color palette', properties: ['openFile'], filters: [paletteFilter],
+    });
+    if (result.canceled) return null;
+    const file = result.filePaths[0];
+    if ((await fs.stat(file)).size > maxPaletteBytes) throw Error('The palette file is too large.');
+    return { name: path.basename(file), text: await fs.readFile(file, 'utf8') };
+  });
   register('open-launch-file', () => {
     const args = process.argv.slice(process.defaultApp ? 2 : 1);
     const file = args.find((arg) => !arg.startsWith('-') && /\.stlp?$/i.test(arg));
@@ -149,22 +160,24 @@ app.whenReady().then(() => {
     choosing = true;
     try {
       const project = kind === 'save' || kind === 'saveAs';
-      if (!project && kind !== 'export') throw Error('Unknown file type.');
+      const palette = kind === 'palette';
+      if (!project && !palette && kind !== 'export') throw Error('Unknown file type.');
       let dest = kind === 'save' ? currentPath : null;
       if (!dest) {
-        const ext = project ? '.stlp' : '.3mf';
+        const filter = palette ? paletteFilter : project ? projectFilter : exportFilter;
+        const ext = '.' + filter.extensions[0];
         const stem = currentPath ? path.parse(currentPath).name : clean(name);
         const d = await dialog.showSaveDialog(win, {
-          title: project ? 'Save painter project' : 'Export 3MF',
+          title: palette ? 'Save color palette' : project ? 'Save painter project' : 'Export 3MF',
           defaultPath: (project && currentPath) || stem + ext,
-          filters: [project ? projectFilter : exportFilter],
+          filters: [filter],
         });
         if (d.canceled) return null;
         dest = d.filePath;
         if (!dest.toLowerCase().endsWith(ext))
           throw Error('Choose a filename ending in ' + ext + '.');
       }
-      destination = { dest, project };
+      destination = { dest, project, palette };
       return true;
     } finally {
       choosing = false;
@@ -173,12 +186,15 @@ app.whenReady().then(() => {
   register('cancel-write', () => { destination = null; });
   register('write', async (model) => {
     if (writing || !destination) throw Error('No destination available.');
-    const { dest, project } = destination;
+    const { dest, project, palette } = destination;
     destination = null;
     writing = true;
     const temporary = path.join(path.dirname(dest), '.stlp-' + randomUUID() + '.tmp');
     try {
-      await writeModel(temporary, model, !project);
+      if (palette) {
+        if (typeof model !== 'string' || Buffer.byteLength(model) > maxPaletteBytes) throw Error('Invalid palette data.');
+        await fs.writeFile(temporary, model, { flag: 'wx' });
+      } else await writeModel(temporary, model, !project);
       await fs.rename(temporary, dest);
       if (project) currentPath = dest;
       return path.basename(dest);

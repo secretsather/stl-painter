@@ -324,14 +324,13 @@ export function adjacency(p, range, seams) {
   return { links, extra };
 }
 
-export function flood(p, surface, start, angle, protect) {
+export function flood(p, surface, start, angle, protect, seen = new Uint8Array(p.paint.length)) {
   if (start < 0 || start >= p.paint.length) return [];
   surface.graph ??= adjacency(p);
   const { links, extra } = surface.graph,
     seed = p.paint[start],
     cutoff = Math.cos((angle * Math.PI) / 180) - 1e-6;
-  const seen = new Uint8Array(p.paint.length),
-    queue = [start];
+  const queue = [start];
   seen[start] = 1;
   for (let pos = 0; pos < queue.length; pos++) {
     const id = queue[pos],
