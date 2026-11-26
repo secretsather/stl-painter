@@ -25,12 +25,12 @@ import { setupSidebar } from './sidebar.js';
 import { setupImportPreview } from './import-preview.js';
 import { RefinedStroke } from './refined-stroke.js';
 import { applyLeafEdits } from './paint-tree.js';
-import { readSTL, sampleProject, flood, binarySTLFaceCount, checkFaceLimit, LARGE_MODEL_FACES } from './mesh.js';
-import { readProject, writeProject, write3MF } from './files.js';
+import { sampleProject, flood, binarySTLFaceCount, checkFaceLimit, LARGE_MODEL_FACES } from './mesh.js';
+import { modelJob, FillJobs } from './model-job.js';
 import { textArtwork, loadFontFamilies } from './text-artwork.js';
 import { setupColorLimit } from './color-limit.js';
-import { mapImage, stampCanvas, loadArtwork } from './stamps.js';
-import { MAX_FILAMENTS, MAX_SWATCHES, physicalSlots, filamentMasks, mixHex, mixCandidates, recipeLabel, suggestFilament } from './mixes.js';
+import { stampCanvas, loadArtwork } from './stamps.js';
+import { MAX_FILAMENTS, MAX_SWATCHES, physicalSlots, filamentMasks, mixHex, recipeLabel, suggestFilament } from './mixes.js';
 import { chooseMix } from './mix-editor.js';
 
 const $ = (id) => document.getElementById(id),
@@ -69,6 +69,8 @@ let p,
   anchor = null,
   armed = false,
   draggingArtwork = false,
+  stampSizePointer = null,
+  stampPreviewDeferred = false,
   preview = new Map(),
   refinedPreview = null,
   previewFrame = 0;
@@ -81,11 +83,12 @@ let history = [],
   busy = false,
   art = null,
   conversion = null;
+let paintRevision = 0;
 const refreshColorLimit = setupColorLimit(() => ({
-  paint: p.paint,
+  paint: p.paint, paintRevision,
   palette: physicalSlots(p).map(slot => p.palette[slot]),
   masks: filamentMasks(p),
-  positions: v.surface.positions,
+  surface: v.surface,
   bottom: v.box.min[2],
 }));
 function notify(msg) {
@@ -103,26 +106,32 @@ function setDocumentName(name) {
   header.textContent = name;
   header.title = name;
 }
+let nativeDirty;
 function state() {
   const pendingStroke = !!stroke?.old.size || !!stroke?.refiner?.edits.size;
   const changed = revision !== saved || pendingStroke;
   $('dirty').hidden = !changed;
-  document.title = (changed ? '• ' : '') + $('docname').textContent + ' — STL Painter';
-  files.dirty(changed);
+  const title = (changed ? '• ' : '') + $('docname').textContent + ' — STL Painter';
+  if (document.title !== title) document.title = title;
+  if (nativeDirty !== changed) {
+    files.dirty(changed);
+    nativeDirty = changed;
+  }
   $('undo').disabled = !history.length && !pendingStroke;
   $('redo').disabled = !future.length;
 }
-function record(label, change, weight = 0) {
+function record(label, change, weight = 0, scope = 'paint') {
   const before = revision;
   revision = ++sequence;
-  history.push({ label, change, before, after: revision, weight });
+  history.push({ label, change, before, after: revision, weight, scope });
   future = [];
   let size = history.reduce((sum, h) => sum + h.weight, 0);
   while (history.length > 1 && (size > 48000000 || history.length > 80))
     size -= history.shift().weight;
   state();
   notify(label);
-  refreshColorLimit();
+  if (scope === 'paint') paintRevision++;
+  if (scope !== 'library') refreshColorLimit();
 }
 let textKey, textMask, fontList;
 // Rasterize physical lettering at a stable resolution. Its projected size can
@@ -191,26 +200,29 @@ function updatePreview() {
     cutoff: +$('cutoff').value,
   };
   const footprint = v.stampFootprint(artwork, placement);
+  const resizingStamp = !text && stampSizePointer !== null && !sizes.stamp.physical;
+  const quickPreview = draggingArtwork || resizingStamp;
   if (tool === 'Stamps') {
-    anchor = footprint.center;
     const outline = $('stamp-outline');
-    outline.style.left = anchor.x + 'px';
-    outline.style.top = anchor.y + 'px';
+    outline.style.left = footprint.center.x + 'px';
+    outline.style.top = footprint.center.y + 'px';
     outline.style.width = placement.width + 'px';
     outline.style.height = (placement.width * artwork.height / artwork.width) + 'px';
     outline.style.transform = `translate(-50%, -50%) rotate(${placement.rotation}deg)`;
     outline.hidden = false;
+    if (resizingStamp) stampPreviewDeferred = true;
+    else anchor = footprint.center;
   }
-  if (!draggingArtwork && $('refine-stamp').checked) {
+  if (!quickPreview && $('refine-stamp').checked) {
     refinedPreview = new RefinedStroke(v);
     refinedPreview.projectFootprint(footprint);
     if (refinedPreview.edits.size) v.previewPaint(refinedPreview.edits);
   } else {
-    preview = draggingArtwork ? v.dragStamp(footprint) : v.stamp(footprint);
+    preview = quickPreview ? v.dragStamp(footprint) : v.stamp(footprint);
     for (const [id, color] of preview) v.color(id, color);
     if (preview.size) v.recolor();
   }
-  $('apply').disabled = draggingArtwork || !hasPreview();
+  $('apply').disabled = quickPreview || !hasPreview();
 }
 function schedulePreview() {
   if (!v || !p || !placingArtwork() || !armed || previewFrame) return;
@@ -230,13 +242,13 @@ function finishStroke() {
     refiner.dispose();
     const edits = refiner.edits;
     if ([...edits.values()].some((tree) => typeof tree !== 'number')) {
-      const before = { paint: p.paint, splits: p.splits };
-      const after = applyLeafEdits(p, edits);
+      const before = { paint: p.paint, splits: p.splits, ranges: v.ranges };
+      const after = applyLeafEdits(p, edits, v.ranges);
       const change = (forward) => {
         const state = forward ? after : before;
         p.paint = state.paint;
         p.splits = state.splits;
-        v.rebuildSurface();
+        v.rebuildSurface(state.ranges, after.changed);
       };
       const label = stroke.label;
       stroke = null;
@@ -290,12 +302,15 @@ function undo(redo = false) {
   to.push(h);
   selected = Math.min(selected, p.palette.length - 1);
   stampIndex = Math.min(stampIndex, p.stamps.length - 1);
-  paletteUI();
-  stampUI();
+  if (h.scope !== 'paint') {
+    paletteUI();
+    stampUI();
+  }
   toolUI();
   state();
   notify((redo ? 'Redid ' : 'Undid ') + h.label.toLowerCase());
-  refreshColorLimit();
+  if (h.scope === 'paint') paintRevision++;
+  if (h.scope !== 'library') refreshColorLimit();
 }
 function removeButton(label, action) {
   const button = document.createElement('button');
@@ -403,28 +418,46 @@ function paletteUI() {
   $('add-color').disabled = physical.length >= MAX_FILAMENTS || p.palette.length >= MAX_SWATCHES;
   $('add-mix').disabled = physical.length < 2 || p.palette.length >= MAX_SWATCHES;
 }
+const stampRows = new WeakMap();
 function stampUI() {
   const list = $('stamp-list');
-  list.replaceChildren();
-  p.stamps.forEach((s, i) => {
-    const b = document.createElement('button');
-    b.className = 'stamp-choice';
-    b.setAttribute('aria-pressed', String(i === stampIndex));
-    const name = document.createElement('span');
-    name.textContent = s.name;
-    b.append(stampCanvas(s, p.palette), name);
-    b.onclick = () => {
-      clearPreview();
-      stampIndex = i;
-      armed = true;
-      stampUI();
-      updatePreview();
-    };
-    const row = document.createElement('div');
-    row.className = 'stamp-row';
-    row.append(b, removeButton('Remove stamp ' + s.name, () => removeStamp(i)));
-    list.append(row);
+  p.stamps.forEach((stamp, i) => {
+    let entry = stampRows.get(stamp);
+    if (!entry) {
+      const row = document.createElement('div'), button = document.createElement('button');
+      row.className = 'stamp-row';
+      button.className = 'stamp-choice';
+      const name = document.createElement('span');
+      name.textContent = stamp.name;
+      button.append(name);
+      button.onclick = () => {
+        clearPreview();
+        stampIndex = p.stamps.indexOf(stamp);
+        armed = true;
+        stampUI();
+        updatePreview();
+      };
+      row.append(button, removeButton('Remove stamp ' + stamp.name, () => removeStamp(p.stamps.indexOf(stamp))));
+      entry = { row, button };
+      stampRows.set(stamp, entry);
+    }
+    const changedPixels = entry.pixels !== stamp.pixels;
+    if (changedPixels) {
+      entry.pixels = stamp.pixels;
+      entry.slots = [...new Set(stamp.pixels)].filter(slot => slot !== 255);
+    }
+    const colors = entry.slots.map(slot => p.palette[slot]).join('');
+    if (changedPixels || entry.colors !== colors) {
+      const thumbnail = stampCanvas(stamp, p.palette, false, Math.ceil(28 * devicePixelRatio));
+      if (entry.canvas) entry.canvas.replaceWith(thumbnail);
+      else entry.button.prepend(thumbnail);
+      entry.canvas = thumbnail;
+      entry.colors = colors;
+    }
+    entry.button.setAttribute('aria-pressed', String(i === stampIndex));
+    if (list.children[i] !== entry.row) list.insertBefore(entry.row, list.children[i] ?? null);
   });
+  while (list.children.length > p.stamps.length) list.lastElementChild.remove();
   updatePlacementVisibility();
 }
 function removeStamp(index) {
@@ -442,7 +475,7 @@ function removeStamp(index) {
     stampIndex = p.stamps.indexOf(activeStamp);
   };
   change(true);
-  record('Removed stamp ' + stamp.name, change, stamp.source.byteLength + stamp.pixels.byteLength);
+  record('Removed stamp ' + stamp.name, change, stamp.source.byteLength + stamp.pixels.byteLength, 'library');
   stampUI();
   const choices = $('stamp-list').querySelectorAll('.stamp-choice');
   (choices[Math.min(index, choices.length - 1)] ?? $('import-image')).focus({ preventScroll: true });
@@ -481,12 +514,27 @@ function toolUI() {
   $('pointer').hidden = true;
   $('apply').disabled = !hasPreview();
 }
+let fillJobs;
+function prepareFill() {
+  const surface = v.surface;
+  const jobs = fillJobs ??= new FillJobs();
+  surface.graphJob ??= jobs.get(p, v).then(graph => { surface.graph = graph; }).catch(error => {
+    delete surface.graphJob;
+    if (fillJobs === jobs) {
+      jobs.close();
+      fillJobs = null;
+    }
+    throw error;
+  });
+  return surface.graphJob;
+}
 function chooseTool(name) {
   if (pickingFace) setFacePicking(false);
   draggingArtwork = false;
   finishStroke();
   clearPreview();
   tool = name;
+  if (tool === 'Fill') prepareFill().catch(() => {});
   armed = tool === 'Text';
   if (tool === 'Stamps') {
     stampIndex = -1;
@@ -497,7 +545,7 @@ function chooseTool(name) {
   if (tool === 'Text') $('text-content').focus();
   schedulePreview();
 }
-function load(project, kind, documentName = project.name) {
+function load(project, kind, documentName = project.name, prepared) {
   if (pickingFace) setFacePicking(false);
   draggingArtwork = false;
   if (v?.project) clearPreview();
@@ -516,7 +564,10 @@ function load(project, kind, documentName = project.name) {
   stampIndex = tool === 'Stamps' && Number.isInteger(context?.stampIndex) &&
     context.stampIndex >= 0 && context.stampIndex < p.stamps.length ? context.stampIndex : -1;
   armed = tool === 'Text' || stampIndex >= 0;
-  v.setProject(p);
+  fillJobs?.close();
+  fillJobs = null;
+  v.setProject(p, prepared);
+  if (tool === 'Fill') prepareFill().catch(() => {});
   $('projection').textContent = v.camera.isOrthographicCamera ? 'Orthographic' : 'Perspective';
   $('model-kind').textContent = kind;
   $('model-name').textContent = p.name;
@@ -554,7 +605,11 @@ async function task(message, fn) {
 async function write(kind) {
   finishStroke();
   const exported = kind === 'export';
-  const data = exported ? write3MF(p) : writeProject({
+  if (!(await files.chooseWrite(kind, p.name))) return false;
+  const data = exported ? {
+    name: p.name, vertices: p.vertices, faces: p.faces, depth: p.depth,
+    paint: p.paint, splits: p.splits, palette: p.palette, mixes: p.mixes,
+  } : {
     ...p,
     editingContext: {
       camera: v.cameraState(),
@@ -563,8 +618,8 @@ async function write(kind) {
       sizes: Object.fromEntries(Object.entries(sizes).map(([name, size]) => [name, size.settings()])),
       ...(tool === 'Stamps' && { stampIndex }),
     },
-  });
-  const name = await files.write(kind, p.name, data);
+  };
+  const name = await files.write(data);
   if (!name) return false;
   if (!exported) {
     saved = revision;
@@ -590,18 +645,24 @@ function openModel(selectFile) {
     const declared = project ? 0 : binarySTLFaceCount(file.bytes);
     checkFaceLimit(declared);
     if (declared > LARGE_MODEL_FACES && !(await files.confirmLargeModel(declared))) return;
-    let next = project ? readProject(file.bytes) : readSTL(file.bytes, file.name);
+    let next = await modelJob({ project, bytes: file.bytes, name: file.name }, [file.bytes.buffer]);
     const faces = next.depth.length;
     if (!declared && faces > LARGE_MODEL_FACES && !(await files.confirmLargeModel(faces))) return;
     const decision = await prepareToLeave();
     if (decision === 'cancel') return;
     // Saving may have replaced the selected project, including via a Save As dialog.
     if (project && decision === 'saved') {
-      next = readProject(await files.readPendingProject());
+      const bytes = await files.readPendingProject();
+      next = await modelJob({ project: true, bytes }, [bytes.buffer]);
       if (next.depth.length > LARGE_MODEL_FACES && next.depth.length !== faces &&
           !(await files.confirmLargeModel(next.depth.length))) return;
     }
-    load(next, project ? 'PAINTER PROJECT' : 'STL MODEL', project ? file.name : next.name);
+    const { vertices, faces: indices, depth, paint, splits, palette } = next;
+    const attributes = [vertices, indices, depth, paint, splits].filter(Boolean);
+    const { mesh, prepared } = await modelJob({ mesh: { vertices, faces: indices, depth, paint, splits, palette } },
+      [...new Set(attributes.map(a => a.buffer))]);
+    Object.assign(next, mesh);
+    load(next, project ? 'PAINTER PROJECT' : 'STL MODEL', project ? file.name : next.name, prepared);
     await files.accept();
   });
 }
@@ -612,6 +673,24 @@ $('export').onclick = () => task('Preparing 3MF export…', () => write('export'
 files.onClose(() => task('Closing project…', async () => (await prepareToLeave()) !== 'cancel'));
 $('undo').onclick = () => undo();
 $('redo').onclick = () => undo(true);
+$('clear-paint').onclick = () => {
+  finishStroke();
+  armed = draggingArtwork = false;
+  clearPreview();
+  $('apply').disabled = true;
+  if (!p.paint.some(color => color !== 0)) {
+    notify('The model already uses only the base color.');
+    return;
+  }
+  const before = p.paint.slice();
+  const change = forward => {
+    if (forward) p.paint.fill(0);
+    else p.paint.set(before);
+    v.refreshPalette();
+  };
+  change(true);
+  record('Cleared all paint to the base color', change, before.byteLength);
+};
 for (const b of all('[data-tool]')) b.onclick = () => chooseTool(b.dataset.tool);
 $('add-color').onclick = () => {
   revealPanel('palette');
@@ -626,11 +705,11 @@ $('add-color').onclick = () => {
       p.palette.pop();
       selected = oldIndex;
     }
-    v.refreshPalette();
+    v.updateColorLookup();
   };
   clearPreview();
   change(true);
-  record('Added palette color', change);
+  record('Added palette color', change, 0, 'palette');
   paletteUI();
   schedulePreview();
 };
@@ -644,11 +723,12 @@ function editMix(id) {
       if (forward || old) p.palette[slot] = mixHex(p.palette, forward ? parts : old);
       else p.palette.pop();
       selected = forward ? slot : previous;
-      v.refreshPalette();
+      if (old) v.refreshPalette();
+      else v.updateColorLookup();
     };
     clearPreview();
     change(true);
-    record(old ? 'Edited mixed color' : 'Added mixed color', change);
+    record(old ? 'Edited mixed color' : 'Added mixed color', change, 0, 'palette');
     revealPanel('mixed-colors');
     paletteUI();
     stampUI();
@@ -722,7 +802,7 @@ function removePaletteColor(id, replacement, dependent = []) {
   };
   clearPreview();
   change(true);
-  record('Removed ' + name, change, weight);
+  record('Removed ' + name, change, weight, 'palette');
   paletteUI();
   stampUI();
   schedulePreview();
@@ -748,7 +828,7 @@ function editPaletteColor(id, next) {
   };
   clearPreview();
   change(true);
-  record('Changed ' + swatchName(id), change);
+  record('Changed ' + swatchName(id), change, 0, 'palette');
   paletteUI();
   stampUI();
   schedulePreview();
@@ -832,6 +912,22 @@ const sizes = {
   text: sizeControl('text', 'text-size-value'),
   stamp: sizeControl('stamp', 'stamp-size-value'),
 };
+const stampSlider = $('stamp-size');
+stampSlider.addEventListener('pointerdown', e => {
+  if (e.isPrimary && e.button === 0) stampSizePointer = e.pointerId;
+});
+function finishStampResize(e) {
+  if (stampSizePointer === null || (e.pointerId !== undefined && e.pointerId !== stampSizePointer)) return;
+  stampSizePointer = null;
+  if (stampPreviewDeferred) {
+    stampPreviewDeferred = false;
+    schedulePreview();
+  }
+}
+window.addEventListener('pointerup', finishStampResize, true);
+window.addEventListener('pointercancel', finishStampResize, true);
+stampSlider.addEventListener('lostpointercapture', finishStampResize);
+window.addEventListener('blur', finishStampResize);
 const refineEdges = $('refine-edges');
 const refineStamp = $('refine-stamp');
 refineStamp.onchange = () => {
@@ -886,11 +982,36 @@ $('image-input').onchange = async () => {
     $('mapping-mode').options[2].disabled = physical.length < 2 || p.palette.length >= MAX_SWATCHES;
     $('image-name').textContent = art.name;
     $('show-removed').checked = false;
+    $('mapping-preview').replaceChildren();
+    const worker = matchingWorker = new Worker('./matching-worker.js');
+    worker.onmessage = ({ data }) => {
+      if (worker !== matchingWorker) return;
+      matchingBusy = false;
+      if (pendingMatch) return sendMatch();
+      if (data.error) return failMatching(data.error);
+      conversion = data.result;
+      showConversion();
+    };
+    worker.onerror = event => {
+      if (worker === matchingWorker) failMatching(event.message || 'Image matching failed.');
+    };
+    matchingWorker.postMessage({ image: art.data, project: { palette: p.palette, mixes: p.mixes } });
     convert();
     $('mapping').showModal();
     importPreview.fit();
   });
 };
+let matchingWorker, pendingMatch, matchingBusy = false;
+function failMatching(message) {
+  $('mapping').close('cancel');
+  error(Error(message));
+}
+function sendMatch() {
+  if (matchingBusy || !pendingMatch) return;
+  matchingBusy = true;
+  matchingWorker.postMessage(pendingMatch);
+  pendingMatch = null;
+}
 function convert() {
   const mode = $('mapping-mode').value;
   const physical = physicalSlots(p);
@@ -902,9 +1023,16 @@ function convert() {
   const cutoff = +$('stamp-opacity').value;
   $('stamp-opacity-value').textContent = cutoff + '%';
   $('stamp-opacity').setAttribute('aria-valuetext', cutoff + '%');
-  conversion = mapImage(art.data, p.palette, mode === 'existing' ? 0 : +$('limit').value, cutoff, {
-    capacity, mixes: p.mixes, candidates: mode === 'mix' ? mixCandidates(p) : undefined,
-  });
+  pendingMatch = { mode, limit: mode === 'existing' ? 0 : +$('limit').value, cutoff, capacity };
+  $('mapping-preview').setAttribute('aria-busy', 'true');
+  $('confirm-import').disabled = true;
+  $('empty-mask').hidden = true;
+  $('mapped-colors').replaceChildren();
+  sendMatch();
+}
+function showConversion() {
+  $('mapping-preview').setAttribute('aria-busy', 'false');
+  const physical = physicalSlots(p);
   const palette = [...p.palette, ...conversion.added];
   renderImportPreview();
   $('mapped-colors').replaceChildren();
@@ -923,6 +1051,7 @@ function convert() {
   }
 }
 function renderImportPreview() {
+  if (!art || !conversion) return;
   const stamp = { ...art, pixels: conversion.pixels };
   importPreview.show(stampCanvas(stamp, [...p.palette, ...conversion.added], $('show-removed').checked));
 }
@@ -931,6 +1060,9 @@ $('mapping-mode').onchange = convert;
 $('limit').oninput = convert;
 $('stamp-opacity').oninput = convert;
 $('mapping').onclose = () => {
+  matchingWorker?.terminate();
+  matchingWorker = pendingMatch = null;
+  matchingBusy = false;
   if ($('mapping').returnValue === 'import' && art && !$('confirm-import').disabled) {
     clearPreview();
     const { data, ...stamp } = art;
@@ -950,10 +1082,10 @@ $('mapping').onclose = () => {
         p.stamps.pop();
         stampIndex = prior;
       }
-      v.refreshPalette();
+      v.updateColorLookup();
     };
     change(true);
-    record('Imported stamp', change, stamp.source.length + stamp.pixels.length);
+    record('Imported stamp', change, stamp.source.length + stamp.pixels.length, added.length ? 'palette' : 'library');
     armed = true;
     anchor = { x: v.w / 2, y: v.h / 2 };
     paletteUI();
@@ -965,7 +1097,7 @@ $('mapping').onclose = () => {
   $('mapping').returnValue = '';
 };
 $('apply').onclick = () => {
-  if (draggingArtwork) return;
+  if (draggingArtwork || stampSizePointer !== null) return;
   if (previewFrame) updatePreview();
   if (!hasPreview()) return;
   const changes = preview;
@@ -1037,12 +1169,16 @@ function bindCanvas() {
     canvas.setPointerCapture(e.pointerId);
     if (tool === 'Fill') {
       const seed = v.pick(pt.x, pt.y);
-      if (seed < 0) return;
-      stroke = { old: new Map(), label: 'Filled region' };
-      for (const id of flood(p, v.surface, seed, +$('angle').value, $('protect').checked))
-        setColor(id, selected);
-      v.recolor();
-      finishStroke();
+      const protect = $('protect').checked, angle = +$('angle').value;
+      if (seed < 0 || (protect && p.paint[seed] === selected)) return;
+      const fill = () => {
+        stroke = { old: new Map(), label: 'Filled region' };
+        for (const id of flood(p, v.surface, seed, angle, protect)) setColor(id, selected);
+        v.recolor();
+        finishStroke();
+      };
+      if (v.surface.graph) fill();
+      else task('Preparing fill…', async () => { await prepareFill(); fill(); });
     } else if (placingArtwork()) {
       draggingArtwork = true;
       $('apply').disabled = true;
@@ -1051,6 +1187,7 @@ function bindCanvas() {
       schedulePreview();
     } else {
       last = pt;
+      refreshColorLimit.beforeStroke();
       stroke = { old: new Map(), label: tool === 'Brush' ? 'Painted stroke' : 'Erased stroke' };
       if (refineEdges.checked)
         stroke.refiner = new RefinedStroke(v, tool === 'Eraser' ? 0 : selected);

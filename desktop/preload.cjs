@@ -7,7 +7,14 @@ contextBridge.exposeInMainWorld('painterFiles', {
   dirty: (value) => ipcRenderer.invoke('dirty', value),
   decide: () => ipcRenderer.invoke('decide'),
   confirmLargeModel: (count) => ipcRenderer.invoke('confirm-large-model', count),
-  write: (kind, name, data) => ipcRenderer.invoke('write', kind, name, data),
+  chooseWrite: (kind, name) => ipcRenderer.invoke('choose-write', kind, name),
+  write: async model => {
+    try { return await ipcRenderer.invoke('write', model); }
+    catch (error) {
+      await ipcRenderer.invoke('cancel-write');
+      throw error;
+    }
+  },
   onClose: (fn) =>
     ipcRenderer.on('request-close', async () => {
       let ok = false;

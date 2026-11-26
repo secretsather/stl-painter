@@ -2,7 +2,7 @@ import { build } from 'esbuild';
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 await mkdir('dist', { recursive: true });
 await build({
-  entryPoints: ['src/app.js', 'src/color-check-worker.js'],
+  entryPoints: ['src/app.js', 'src/color-check-worker.js', 'src/model-worker.js', 'src/fill-worker.js', 'src/matching-worker.js'],
   bundle: true,
   minify: true,
   target: 'chrome130',
@@ -25,3 +25,5 @@ for (const [name, file] of [
 }
 notices.push('Prusa FDM Mixer\n\n' + await readFile('src/vendor/prusa-fdm-mixer/LICENSE', 'utf8'));
 await writeFile('dist/THIRD-PARTY-NOTICES.txt', notices.join('\n\n'));
+
+await build({ entryPoints: ['desktop/file-writer.mjs'], outfile: 'dist/file-writer.cjs', platform: 'node', format: 'cjs', bundle: true });

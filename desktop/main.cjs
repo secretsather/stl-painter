@@ -1,6 +1,7 @@
 const { app, BrowserWindow, dialog, ipcMain, Menu } = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { Worker } = require('node:worker_threads');
 const { randomUUID } = require('node:crypto');
 let win,
   currentPath = null,
@@ -41,6 +42,41 @@ async function decide() {
     cancelId: 2,
   });
   return ['save', 'discard', 'cancel'][response];
+}
+let fileWriter;
+function writeModel(temporary, project, exporting) {
+  if (!fileWriter) {
+    const entry = app.isPackaged
+      ? path.join(process.resourcesPath, 'app.asar.unpacked/dist/file-writer.cjs')
+      : path.join(__dirname, '../dist/file-writer.cjs');
+    const worker = fileWriter = new Worker(entry);
+    worker.once('exit', () => { if (fileWriter === worker) fileWriter = null; });
+    worker.unref();
+  }
+  const worker = fileWriter;
+  // The write IPC handler admits one operation at a time.
+  return new Promise((resolve, reject) => {
+    function cleanup() {
+      worker.off('message', complete);
+      worker.off('error', fail);
+      worker.off('exit', stopped);
+    }
+    function complete({ error }) {
+      cleanup();
+      if (error) reject(Error(error));
+      else resolve();
+    }
+    function fail(error) { cleanup(); reject(error); }
+    function stopped() { fail(Error('File writer stopped.')); }
+    worker.once('message', complete);
+    worker.once('error', fail);
+    worker.once('exit', stopped);
+    const arrays = [project.vertices, project.faces, project.depth, project.paint, project.splits,
+      ...(project.stamps ?? []).flatMap(s => [s.pixels, s.source])].filter(Boolean);
+    try {
+      worker.postMessage({ temporary, project, exporting }, [...new Set(arrays.map(a => a.buffer))]);
+    } catch (error) { fail(error); }
+  });
 }
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
@@ -107,10 +143,10 @@ app.whenReady().then(() => {
     });
     return response === 0;
   });
-  register('write', async (kind, name, data) => {
-    if (writing) throw Error('A save is already in progress.');
-    writing = true;
-    let temporary;
+  let destination, choosing = false;
+  register('choose-write', async (kind, name) => {
+    if (writing || choosing || destination) throw Error('A save is already in progress.');
+    choosing = true;
     try {
       const project = kind === 'save' || kind === 'saveAs';
       if (!project && kind !== 'export') throw Error('Unknown file type.');
@@ -128,28 +164,41 @@ app.whenReady().then(() => {
         if (!dest.toLowerCase().endsWith(ext))
           throw Error('Choose a filename ending in ' + ext + '.');
       }
-      temporary = path.join(path.dirname(dest), '.stlp-' + randomUUID() + '.tmp');
-      await fs.writeFile(temporary, data, { flag: 'wx' });
+      destination = { dest, project };
+      return true;
+    } finally {
+      choosing = false;
+    }
+  });
+  register('cancel-write', () => { destination = null; });
+  register('write', async (model) => {
+    if (writing || !destination) throw Error('No destination available.');
+    const { dest, project } = destination;
+    destination = null;
+    writing = true;
+    const temporary = path.join(path.dirname(dest), '.stlp-' + randomUUID() + '.tmp');
+    try {
+      await writeModel(temporary, model, !project);
       await fs.rename(temporary, dest);
-      temporary = null;
       if (project) currentPath = dest;
       return path.basename(dest);
     } finally {
-      if (temporary) await fs.rm(temporary, { force: true }).catch(() => {});
+      await fs.rm(temporary, { force: true }).catch(() => {});
       writing = false;
     }
   });
   register('finish-close', (approved) => {
     closePending = false;
-    if (approved && !writing) {
+    if (approved && !writing && !choosing && !destination) {
       dirty = false;
       win.close();
     }
   });
+  win.webContents.on('render-process-gone', () => { destination = null; dirty = false; });
   win.on('close', (event) => {
-    if (writing || dirty) {
+    if (choosing || destination || writing || dirty) {
       event.preventDefault();
-      if (!writing && !closePending) {
+      if (!choosing && !destination && !writing && !closePending) {
         closePending = true;
         win.webContents.send('request-close');
       }

@@ -379,7 +379,7 @@ try {
   await page.locator('#image-input').setInputFiles(art);
   await page.locator('#mapping[open]').waitFor();
   const previewInk = () =>
-    page.locator('#mapping-preview canvas').evaluate((canvas) => {
+    page.locator('#mapping-preview[aria-busy="false"] canvas').evaluate((canvas) => {
       const rgba = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
       let ink = 0;
       for (let i = 3; i < rgba.length; i += 4) if (rgba[i]) ink++;

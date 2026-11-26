@@ -1,8 +1,10 @@
 import * as T from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { MeshBVH } from 'three-mesh-bvh';
-import { bounds, makeSurface } from './mesh.js';
-import { bisect } from './paint-tree.js';
+import { cellHeights } from './color-at-height.js';
+import { geometryForProject, displayColors, displayChunk, writeColor } from './display-mesh.js';
+import { bounds, sourceNormals } from './mesh.js';
+import { bisect, surfaceRanges } from './paint-tree.js';
 import { stampFootprint } from './stamp-footprint.js';
 import { ViewCube, viewDirections } from './view-cube.js';
 
@@ -13,6 +15,7 @@ const EDGE_ON_COSINE = 1e-5;
 export class Viewport {
   constructor(host, onView) {
     this.host = host;
+    this.chunkVersion = 0;
     this.renderer = new T.WebGLRenderer({
       antialias: true,
       alpha: false,
@@ -45,10 +48,22 @@ export class Viewport {
     });
     this.pickMaterial = new T.RawShaderMaterial({
       side: T.DoubleSide,
-      vertexShader:
-        'precision highp float; uniform mat4 projectionMatrix,modelViewMatrix; attribute vec3 position,cell; varying vec3 key; void main(){ key=cell; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }',
-      fragmentShader:
-        'precision highp float; varying vec3 key; void main(){gl_FragColor=vec4(key,1.);}',
+      glslVersion: T.GLSL3,
+      uniforms: { firstCell: { value: 0 } },
+      vertexShader: `precision highp float;
+        uniform mat4 projectionMatrix, modelViewMatrix;
+        uniform int firstCell;
+        in vec3 position;
+        flat out int id;
+        void main() {
+          id = firstCell + gl_VertexID / 3 + 1;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.);
+        }`,
+      fragmentShader: `precision highp float;
+        precision highp int;
+        flat in int id;
+        out vec4 pixel;
+        void main() { pixel = vec4(float(id & 255), float((id >> 8) & 255), float(id >> 16), 255.) / 255.; }`,
     });
     this.perspective = new T.PerspectiveCamera(35, 1, 0.1, 1000);
     this.orthographic = new T.OrthographicCamera(-1, 1, 1, -1, 0.1, 1000);
@@ -64,20 +79,19 @@ export class Viewport {
     new ResizeObserver(() => this.resize()).observe(host);
     this.resize();
   }
-  setProject(p) {
-    if (this.mesh) {
+  setProject(p, prepared) {
+    if (this.grid) {
       this.scene.remove(this.grid);
       this.grid.geometry.dispose();
       this.grid.material.dispose();
     }
     this.project = p;
-    const original = new T.BufferGeometry();
-    original.setAttribute('position', new T.BufferAttribute(p.vertices, 3));
-    original.setIndex(new T.BufferAttribute(p.faces, 1));
-    this.tree = new MeshBVH(original, { indirect: true });
+    const original = geometryForProject(p);
+    this.normals = prepared?.normals ?? sourceNormals(p);
+    this.tree = prepared ? MeshBVH.deserialize(prepared.tree, original) : new MeshBVH(original, { indirect: true });
     this.raycaster = new T.Raycaster();
     this.samplePoint = new T.Vector3();
-    const b = bounds(p.vertices);
+    const b = prepared?.box ?? bounds(p.vertices);
     this.box = b;
     this.center = new T.Vector3(...b.min.map((v, i) => v + b.size[i] / 2));
     this.span = b.diagonal || 1;
@@ -89,66 +103,100 @@ export class Viewport {
     this.grid.material.opacity = 0.55;
     this.scene.add(this.grid);
     this.scene.fog = new T.FogExp2('#e5e9e5', 0.22 / this.span);
-    this.rebuildSurface();
+    this.rebuildSurface(prepared?.ranges, undefined, prepared);
     this.fit();
     this.restoreCamera(p.editingContext?.camera);
   }
-  rebuildSurface() {
-    if (this.mesh) {
-      this.scene.remove(this.mesh);
-      this.pickScene.remove(this.pickMesh);
-      this.mesh.geometry.dispose();
-    }
-    this.pickCache = null;
-    this.surface = makeSurface(this.project);
-    const { positions, owners, normals } = this.surface;
-    const geo = new T.BufferGeometry(),
-      colors = new Uint8Array(positions.length),
-      ids = new Uint8Array(positions.length);
-    const flatNormals = new Float32Array(positions.length);
-    for (let id = 0; id < owners.length; id++) {
-      const n = owners[id] * 3,
-        k = id + 1;
-      for (let j = id * 9; j < id * 9 + 9; j += 3) {
-        flatNormals[j] = normals[n];
-        flatNormals[j + 1] = normals[n + 1];
-        flatNormals[j + 2] = normals[n + 2];
-        ids[j] = k & 255;
-        ids[j + 1] = (k >> 8) & 255;
-        ids[j + 2] = (k >> 16) & 255;
+  rebuildSurface(ranges = surfaceRanges(this.project), changed, prepared) {
+    const previous = this.chunks ?? [];
+    const normals = this.normals;
+    this.updateColorLookup();
+    previous.forEach((chunk, i) => {
+      if (changed && !changed.has(i)) return;
+      this.scene.remove(chunk.mesh);
+      this.pickScene.remove(chunk.pick);
+      chunk.mesh.geometry.dispose();
+    });
+    this.ranges = ranges;
+    const chunks = this.chunks = ranges.map((range, i) => {
+      if (changed && !changed.has(i)) {
+        previous[i].range = range;
+        return previous[i];
       }
+      const { data, colorBytes, faceOffsets, flatNormals } =
+        prepared?.chunks[i] ?? displayChunk(this.project, range, normals, this.rgb);
+      const geometry = new T.BufferGeometry();
+      const colors = new T.BufferAttribute(colorBytes, 3, true).setUsage(T.DynamicDrawUsage);
+      geometry.setAttribute('position', new T.BufferAttribute(data.positions, 3));
+      geometry.setAttribute('normal', new T.BufferAttribute(flatNormals, 3));
+      geometry.setAttribute('color', colors);
+      const mesh = new T.Mesh(geometry, this.paintMaterial), pick = new T.Mesh(geometry, this.pickMaterial);
+      const chunk = { version: ++this.chunkVersion, range, data, mesh, pick, colors, faceOffsets, dirtyStart: Infinity, dirtyEnd: -1 };
+      pick.onBeforeRender = () => {
+        this.pickMaterial.uniforms.firstCell.value = chunk.range.cell;
+        this.pickMaterial.uniformsNeedUpdate = true;
+      };
+      this.scene.add(mesh);
+      this.pickScene.add(pick);
+      return chunk;
+    });
+    // Derive contiguous views only for operations which need all cells. Drawing and
+    // editing a chunk retain the local arrays and GPU storage for unaffected chunks.
+    const surface = this.surface = {
+      normals,
+      heightRanges() {
+        const heights = new Float32Array(ranges[ranges.length - 1].endCell * 2);
+        for (let i = 0; i < chunks.length; i++) {
+          const chunk = chunks[i];
+          chunk.heights ??= cellHeights(chunk.data.positions);
+          heights.set(chunk.heights, ranges[i].cell * 2);
+        }
+        return heights;
+      },
+    };
+    Object.defineProperty(surface, 'owners', { configurable: true, get() {
+      const owners = new Uint32Array(ranges[ranges.length - 1].endCell);
+      for (let i = 0; i < chunks.length; i++) owners.set(chunks[i].data.owners, ranges[i].cell);
+      Object.defineProperty(surface, 'owners', { value: owners });
+      return owners;
+    } });
+    this.pickCache = this.lastChunk = null;
+    this.draw();
+  }
+
+  chunkFor(index, byFace = false) {
+    const key = byFace ? 'face' : 'cell', end = byFace ? 'endFace' : 'endCell';
+    const recent = this.lastChunk;
+    if (recent && index >= recent.range[key] && index < recent.range[end]) return recent;
+    let lo = 0, hi = this.chunks.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (index < this.chunks[mid].range[end]) hi = mid;
+      else lo = mid + 1;
     }
-    geo.setAttribute('position', new T.BufferAttribute(positions, 3));
-    geo.setAttribute('normal', new T.BufferAttribute(flatNormals, 3));
-    geo.setAttribute('cell', new T.BufferAttribute(ids, 3, true));
-    this.colors = new T.BufferAttribute(colors, 3, true).setUsage(T.DynamicDrawUsage);
-    geo.setAttribute('color', this.colors);
-    this.mesh = new T.Mesh(geo, this.paintMaterial);
-    this.pickMesh = new T.Mesh(geo, this.pickMaterial);
-    this.scene.add(this.mesh);
-    this.pickScene.add(this.pickMesh);
-    this.refreshPalette();
+    return this.lastChunk = this.chunks[lo];
   }
 
   previewPaint(edits) {
-    // The display mesh can reuse the existing GPU buffers for untouched cells.
-    // Picking and saving continue to use the committed project throughout.
-    const original = this.pickMesh.geometry;
-    const mask = new T.BufferGeometry();
-    for (const name of ['position', 'normal', 'color'])
-      mask.setAttribute(name, original.getAttribute(name));
-    const count = this.surface.owners.length;
-    const index = new Uint32Array((count - edits.size) * 3);
-    for (let id = 0, i = 0; id < count; id++) {
-      if (edits.has(id)) continue;
-      index[i++] = id * 3;
-      index[i++] = id * 3 + 1;
-      index[i++] = id * 3 + 2;
+    this.maskedChunks = new Set();
+    for (const id of edits.keys()) this.maskedChunks.add(this.chunkFor(id));
+    for (const chunk of this.maskedChunks) {
+      const original = chunk.pick.geometry, mask = new T.BufferGeometry();
+      for (const name of ['position', 'normal', 'color']) mask.setAttribute(name, original.getAttribute(name));
+      const {cell, endCell} = chunk.range;
+      const index = new Uint32Array((endCell - cell) * 3);
+      let size = 0;
+      for (let id = cell; id < endCell; id++) {
+        if (edits.has(id)) continue;
+        const local = (id - cell) * 3;
+        index[size++] = local;
+        index[size++] = local + 1;
+        index[size++] = local + 2;
+      }
+      mask.setIndex(new T.BufferAttribute(index.subarray(0, size), 1));
+      mask.boundingSphere = original.boundingSphere;
+      chunk.mesh.geometry = mask;
     }
-    mask.setIndex(new T.BufferAttribute(index, 1));
-    mask.boundingSphere = original.boundingSphere;
-    this.mesh.geometry = mask;
-
     const leafCount = (tree) =>
       typeof tree === 'number' ? 1 : leafCount(tree.left) + leafCount(tree.right);
     let leaves = 0;
@@ -173,9 +221,10 @@ export class Viewport {
       emit(tree.right, right, normal);
     };
     for (const [id, tree] of edits) {
-      const n = this.surface.owners[id] * 3;
+      const chunk = this.chunkFor(id), local = id - chunk.range.cell;
+      const n = chunk.data.owners[local] * 3;
       const tri = [0, 3, 6].map((k) =>
-        new T.Vector3().fromArray(this.surface.positions, id * 9 + k)
+        new T.Vector3().fromArray(chunk.data.positions, local * 9 + k)
       );
       emit(tree, tri, this.surface.normals.subarray(n, n + 3));
     }
@@ -192,34 +241,43 @@ export class Viewport {
     this.scene.remove(this.stampOverlay);
     this.stampOverlay.geometry.dispose();
     this.stampOverlay = null;
-    const mask = this.mesh.geometry;
-    this.mesh.geometry = this.pickMesh.geometry;
-    // The committed mesh owns the shared attributes. Dispose only the mask index.
-    for (const name of Object.keys(mask.attributes)) mask.deleteAttribute(name);
-    mask.dispose();
+    for (const chunk of this.maskedChunks) {
+      const mask = chunk.mesh.geometry;
+      chunk.mesh.geometry = chunk.pick.geometry;
+      for (const name of Object.keys(mask.attributes)) mask.deleteAttribute(name);
+      mask.dispose();
+    }
+    this.maskedChunks.clear();
     this.draw();
+  }
+  updateColorLookup() {
+    this.rgb = displayColors(this.project.palette);
   }
   refreshPalette() {
-    this.rgb = this.project.palette.map((hex) => {
-      const c = new T.Color(hex);
-      return [c.r, c.g, c.b].map((v) => Math.round(v * 255));
-    });
-
-    const a = this.colors.array;
-    for (let i = 0; i < this.project.paint.length; i++) this.color(i, this.project.paint[i], a);
-    this.colors.needsUpdate = true;
+    this.updateColorLookup();
+    for (const chunk of this.chunks) {
+      const { cell, endCell } = chunk.range;
+      for (let id = cell; id < endCell; id++) writeColor(chunk.colors.array, id - cell, this.rgb[this.project.paint[id]]);
+      chunk.colors.clearUpdateRanges();
+      chunk.colors.addUpdateRange(0, chunk.colors.array.length);
+      chunk.colors.needsUpdate = true;
+    }
     this.draw();
   }
-  color(id, index, a = this.colors.array) {
-    const [r, g, b] = this.rgb[index];
-    for (let j = id * 9; j < id * 9 + 9; j += 3) {
-      a[j] = r;
-      a[j + 1] = g;
-      a[j + 2] = b;
-    }
+  color(id, index) {
+    const chunk = this.chunkFor(id), local = id - chunk.range.cell;
+    writeColor(chunk.colors.array, local, this.rgb[index]);
+    chunk.dirtyStart = Math.min(chunk.dirtyStart, local);
+    chunk.dirtyEnd = Math.max(chunk.dirtyEnd, local);
   }
   recolor() {
-    this.colors.needsUpdate = true;
+    for (const chunk of this.chunks) {
+      if (chunk.dirtyEnd < 0) continue;
+      chunk.colors.addUpdateRange(chunk.dirtyStart * 9, (chunk.dirtyEnd - chunk.dirtyStart + 1) * 9);
+      chunk.colors.needsUpdate = true;
+      chunk.dirtyStart = Infinity;
+      chunk.dirtyEnd = -1;
+    }
     this.draw();
   }
   resize() {
@@ -349,7 +407,7 @@ export class Viewport {
     renderer.readRenderTargetPixels(this.target, 0, 0, w, h, rgba);
     renderer.setRenderTarget(null);
     let edgeOn = null;
-    const { owners, normals } = this.surface;
+    const { normals } = this.surface;
     if (this.camera.isOrthographicCamera) {
       const ray = this.camera.getWorldDirection(new T.Vector3());
       edgeOn = new Uint8Array(normals.length / 3);
@@ -359,6 +417,7 @@ export class Viewport {
         edgeOn[face] = Math.abs(facing) <= EDGE_ON_COSINE;
       }
     }
+    const owners = edgeOn && this.surface.owners;
     const ids = new Int32Array(w * h);
     for (let y = 0; y < h; y++)
       for (let x = 0; x < w; x++) {
@@ -471,8 +530,8 @@ export class Viewport {
     return (cache.visible = { active, best, head, next, visibility });
   }
   projectCenter(id) {
-    const pos = this.surface.positions,
-      k = id * 9;
+    const chunk = this.chunkFor(id), pos = chunk.data.positions,
+      k = (id - chunk.range.cell) * 9;
     return this.samplePoint
       .set(
         (pos[k] + pos[k + 3] + pos[k + 6]) / 3,
@@ -494,13 +553,12 @@ export class Viewport {
     const footprint = stampFootprint(stamp, placement);
     if (!placement.filter) return footprint;
     const n = this.surface.normals,
-      pos = this.surface.positions,
       eye = this.camera.position;
     const fixed = this.camera.getWorldDirection(new T.Vector3()).negate(),
       limit = Math.cos((placement.cutoff * Math.PI) / 180);
     footprint.accepts = (id) => {
-      const f = this.surface.owners[id] * 3,
-        k = id * 9;
+      const chunk = this.chunkFor(id), local = id - chunk.range.cell;
+      const pos = chunk.data.positions, f = chunk.data.owners[local] * 3, k = local * 9;
       let vx = fixed.x,
         vy = fixed.y,
         vz = fixed.z;

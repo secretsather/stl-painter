@@ -8,6 +8,7 @@ import { fixture } from './fixture.mjs';
 import { readProject, writeProject } from '../src/files.js';
 import { readSTL } from '../src/mesh.js';
 import { mixHex } from '../src/mixes.js';
+import { applyLeafEdits } from '../src/paint-tree.js';
 
 async function desktop(t, dir) {
   dir ??= await fs.mkdtemp(path.join(os.tmpdir(), 'stl-painter-release-'));
@@ -36,6 +37,45 @@ async function desktop(t, dir) {
   return { app, page, dir, projectFile, click };
 }
 
+test('Clear all paint resets every leaf to the custom base and supports one-step undo and redo', async (t) => {
+  const { page, click, projectFile } = await desktop(t);
+  const project = readSTL(fixture(), 'Mixed slab.stl');
+  project.palette[0] = '#553322';
+  const mix = [{slot:1,percent:50},{slot:2,percent:50}];
+  project.mixes = {4:mix};
+  project.palette.push(mixHex(project.palette, mix));
+  project.paint.fill(2);
+  Object.assign(project, applyLeafEdits(project, new Map([[0, {side:1,left:0,right:4}]])));
+  project.stamps = [{name:'Logo',width:2,height:1,pixels:Uint8Array.of(4,255),
+    source:Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII=', 'base64'))}];
+  await fs.writeFile(projectFile, writeProject(project));
+  await click('open');
+  await page.getByRole('button', {name:'Mix 1', exact:true}).click();
+  await page.locator('[data-tool="Text"]').click();
+  await page.locator('#text-content').fill('Test');
+  await page.waitForFunction(() => !document.getElementById('apply').disabled);
+  await click('clear-paint');
+  assert.ok(await page.locator('#apply').isDisabled());
+  assert.ok(await page.locator('#dirty').isVisible());
+  await click('save');
+  const cleared = readProject(await fs.readFile(projectFile));
+  assert.ok(cleared.paint.every(slot => slot === 0));
+  assert.deepEqual(cleared.splits, project.splits);
+  assert.deepEqual(cleared.palette, project.palette);
+  assert.deepEqual(cleared.mixes, project.mixes);
+  assert.deepEqual(cleared.stamps, project.stamps);
+  await click('clear-paint');
+  assert.ok(await page.locator('#dirty').isHidden(), 'clearing an already blank model preserves the save point');
+  await click('undo');
+  await click('save');
+  assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, project.paint);
+  await click('redo');
+  await click('save');
+  await click('open');
+  await click('save');
+  assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, cleared.paint);
+});
+
 test('Save, Save As and Export show the matching file type and action', async (t) => {
   const { app, page, click } = await desktop(t);
   await app.evaluate(({ dialog }) => {
@@ -55,6 +95,24 @@ test('Save, Save As and Export show the matching file type and action', async (t
     assert.equal(options.title, title);
     assert.deepEqual(options.filters, [{ name: filter, extensions: [extension] }]);
   }
+});
+
+test('a failed export removes its temporary file and a retry writes a complete archive', async t => {
+  const { app, page, click, dir } = await desktop(t);
+  const blocked = path.join(dir, 'Directory.3mf'), output = path.join(dir, 'Retried.3mf');
+  await fs.mkdir(blocked);
+  await app.evaluate(({ dialog }, paths) => {
+    dialog.showSaveDialog = async () => ({ canceled: false, filePath: paths.shift() });
+  }, [blocked, output]);
+  await click('export');
+  await page.locator('#notice[open]').waitFor();
+  assert.ok((await fs.stat(blocked)).isDirectory());
+  assert.ok(!(await fs.readdir(dir)).some(name => name.endsWith('.tmp')));
+  await page.locator('#notice button').click();
+  await click('export');
+  const archive = await fs.readFile(output);
+  assert.equal(archive.readUInt32LE(archive.length - 22), 0x06054b50);
+  assert.equal(await page.locator('#status').innerText(), 'Exported Retried.3mf');
 });
 
 test('a delayed title update after window destruction is harmless', async (t) => {
@@ -83,7 +141,7 @@ test('mixed colors support editable ratios, independent panels, stamp matching a
   const first = page.getByRole('spinbutton', { name: 'Filament 1 percentage' });
   await first.fill('32');
   assert.ok(await page.locator('#confirm-mix').isDisabled());
-  await page.getByRole('button', {name:'67/33', exact:true}).click();
+  await page.getByRole('button', {name:/^Color 1 · 67% \+ Color 2 · 33% · #/}).click();
   assert.equal(await first.inputValue(), '67');
   await click('confirm-mix');
   assert.match(await rows.first().innerText(), /Color 1 · 67% \+ Color 2 · 33%/);
@@ -93,7 +151,6 @@ test('mixed colors support editable ratios, independent panels, stamp matching a
   await mixedToggle.click();
   await click('add-mix');
   await page.locator('#mix-count').selectOption('3');
-  assert.ok(await page.locator('#mix-presets').isHidden());
   await page.getByRole('spinbutton', {name:'Filament 3 percentage'}).fill('34');
   await click('confirm-mix');
   assert.match(await rows.nth(1).innerText(), /Color 3 · 34%/);
@@ -207,34 +264,43 @@ test('mix suggestions cover each physical pair and trio and only save on confirm
   const { page, click, projectFile } = await desktop(t);
   await click('add-mix');
   const gallery = page.locator('#mix-suggestions');
-  const groups = gallery.locator('.mix-group');
+  const swatches = gallery.getByRole('button');
   const shares = page.locator('#mix-parts input');
-  async function verify(expectedGroups, ratios) {
-    const shown = await groups.evaluateAll(nodes => nodes.map(node => ({
-      sources: [...node.querySelectorAll('.mix-sources span')].map(s => s.textContent).join('+'),
-      ratios: [...node.querySelectorAll('button')].map(b => b.textContent),
-    })));
-    assert.deepEqual(shown, expectedGroups.map(ids => ({
-      sources: ids.map(i => 'Color ' + i).join('+'), ratios,
-    })));
+  const buttons = await swatches.evaluateAll(nodes => nodes.map(b => {
+    const rect = b.getBoundingClientRect();
+    return {
+      recipe: b.title.split(' · #')[0],
+      color: b.style.getPropertyValue('--swatch'),
+      text: b.textContent,
+      visible: rect.width > 0 && rect.height > 0 && rect.top >= 0 && rect.bottom <= innerHeight,
+    };
+  }));
+  const expected = [];
+  for (const ids of [[1,2],[1,3],[1,4],[2,3],[2,4],[3,4],[1,2,3],[1,2,4],[1,3,4],[2,3,4]]) {
+    const ratios = ids.length === 2 ? [[50,50],[33,67],[67,33]] : [[33,33,34],[33,34,33],[34,33,33]];
+    for (const ratio of ratios) expected.push(ids.map((id,i) => `Color ${id} · ${ratio[i]}%`).join(' + '));
   }
-  await verify([[1,2],[1,3],[1,4],[2,3],[2,4],[3,4]], ['50/50','33/67','67/33']);
-  const pair = groups.nth(4).getByRole('button').nth(1);
+  assert.deepEqual(buttons.map(b => b.recipe).sort(), expected.sort());
+  assert.ok(buttons.every(b => b.visible && b.text === '' && /^#[0-9A-F]{6}$/.test(b.color)));
+  const pair = gallery.getByRole('button',{name:/^Color 2 · 33% \+ Color 4 · 67% · #/});
   await pair.click();
   assert.equal(await pair.getAttribute('aria-pressed'), 'true');
   assert.deepEqual(await shares.evaluateAll(nodes => nodes.map(n => n.valueAsNumber)), [33,67]);
   await shares.first().fill('45');
   assert.equal(await gallery.locator('[aria-pressed=true]').count(), 0);
-  await page.locator('#mix-count').selectOption('3');
-  await verify([[1,2,3],[1,2,4],[1,3,4],[2,3,4]], ['33/33/34','33/34/33','34/33/33']);
-  const trio = groups.last().getByRole('button').nth(1);
+  const trio = gallery.getByRole('button',{name:/^Color 2 · 33% \+ Color 3 · 34% \+ Color 4 · 33% · #/});
+  await trio.focus();
+  await trio.press('Enter');
+  assert.equal(await page.locator('#mix-count').inputValue(), '3');
+  assert.deepEqual(await shares.evaluateAll(nodes => nodes.map(n => n.valueAsNumber)), [33,34,33]);
+  await pair.click();
+  assert.equal(await page.locator('#mix-count').inputValue(), '2');
   await trio.click();
   const title = await trio.getAttribute('title');
   assert.ok((await page.locator('#mix-preview').innerText()).includes(title.slice(-7)));
   await page.locator('#mix-editor button[value=cancel]').click();
   assert.equal(await page.locator('#mixed-colors .swatch-row').count(), 0);
   await click('add-mix');
-  await page.locator('#mix-count').selectOption('3');
   await trio.click();
   await click('confirm-mix');
   await click('save');
@@ -242,15 +308,45 @@ test('mix suggestions cover each physical pair and trio and only save on confirm
   assert.deepEqual(saved.mixes[4], [{slot:1,percent:33},{slot:2,percent:34},{slot:3,percent:33}]);
   await click('add-color');
   await click('add-mix');
-  assert.equal(await groups.count(), 10); // Five physical filaments, plus one saved mix.
-  await page.locator('#mix-count').selectOption('3');
-  assert.equal(await groups.count(), 10);
+  assert.equal(await swatches.count(), 60); // Five physical filaments, ten pairs and ten trios.
   assert.ok(await gallery.getByRole('button', {name:title + ' (already in palette)',exact:true}).isDisabled());
   await page.locator('#mix-editor button[value=cancel]').click();
   await page.getByRole('button',{name:'Edit Mix 1',exact:true}).click();
   const current = gallery.getByRole('button',{name:title,exact:true});
   assert.equal(await current.getAttribute('aria-pressed'), 'true');
   assert.ok(await current.isEnabled());
+});
+
+test('large palettes show at most 90 mix suggestions and custom recipes remain editable', async (t) => {
+  const { page, click, projectFile } = await desktop(t);
+  const swatches = page.locator('#mix-suggestions button');
+  const cancel = page.locator('#mix-editor button[value=cancel]');
+  for (let count = 4; count <= 16; count++) {
+    if (count > 4) await click('add-color');
+    if (![4,5,6,16].includes(count)) continue;
+    await click('add-mix');
+    const names = await swatches.evaluateAll(buttons => buttons.map(b => b.title));
+    assert.equal(names.length, Math.min(90, (count ** 3 - count) / 2));
+    assert.equal(new Set(names).size, names.length);
+    if (count >= 6) {
+      assert.equal(names.filter(name => name.split(' + ').length === 2).length, 45);
+      assert.ok(names.some(name => name.includes('Color ' + count + ' ·')));
+    }
+    if (count < 16) await cancel.click();
+  }
+
+  const selects = page.locator('#mix-parts select');
+  await selects.first().selectOption('14');
+  await selects.last().selectOption('15');
+  await page.getByLabel('Filament 1 percentage', {exact:true}).fill('44');
+  assert.equal(await page.locator('#mix-suggestions [aria-pressed=true]').count(), 0);
+  await click('confirm-mix');
+  await click('save');
+  const saved = readProject(await fs.readFile(projectFile));
+  assert.deepEqual(saved.mixes[16], [{slot:14,percent:44},{slot:15,percent:56}]);
+  await page.getByRole('button', {name:'Edit Mix 1',exact:true}).click();
+  assert.equal(await swatches.count(), 90);
+  assert.match(await page.locator('#mix-suggestions [aria-pressed=true]').getAttribute('title'), /Color 15 · 44%/);
 });
 
 test('beige and white use a calibrated preview, reuse the cream spool for a stamp and suggest charcoal', async (t) => {
@@ -458,6 +554,113 @@ test('large models warn above one million, open through 1.5 million, and reject 
   assert.match(await page.locator('#notice-text').innerText(), /1,500,000 source triangle limit/);
   assert.equal((await warnings()).length, 3);
   assert.equal(await page.locator('#model-kind').innerText(), 'PAINTER PROJECT');
+});
+
+test('rapid opacity changes import the final mask, retain PNG bytes and reuse the stamp thumbnail', async t => {
+  const {page, click, projectFile} = await desktop(t);
+  const png = await page.evaluate(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 128;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#DE7248';
+    ctx.fillRect(0, 0, 64, 128);
+    ctx.globalAlpha = 0.4;
+    ctx.fillRect(64, 0, 64, 128);
+    return canvas.toDataURL().split(',')[1];
+  });
+  await page.locator('[data-tool="Stamps"]').click();
+  const bytes = Buffer.from(png, 'base64');
+  await page.locator('#image-input').setInputFiles({ name:'Opacity.png', mimeType:'image/png', buffer:bytes });
+  await page.locator('#mapping[open]').waitFor();
+  await page.locator('#stamp-opacity').evaluate(control => {
+    for (const value of [0, 100, 10, 85]) {
+      control.value = value;
+      control.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    if (!document.getElementById('confirm-import').disabled) throw Error('Stale conversion can be accepted');
+  });
+  await click('confirm-import');
+  await click('save');
+  const project = readProject(await fs.readFile(projectFile));
+  assert.deepEqual(Buffer.from(project.stamps[0].source), bytes);
+  assert.equal(project.stamps[0].pixels.filter(slot => slot === 255).length, 64 * 128);
+  const thumb = page.locator('.stamp-choice canvas');
+  const handle = await thumb.elementHandle();
+  await page.locator('.stamp-choice').click();
+  await page.locator('[data-tool="Brush"]').click();
+  await page.locator('#viewport > canvas').click();
+  await click('undo');
+  assert.ok(await thumb.evaluate((current, original) => current === original, handle));
+});
+
+test('pixel stamp resizing shows the artwork while dragging and refines once on release', async (t) => {
+  const { app, page, click, projectFile } = await desktop(t);
+  const project = readSTL(fixture(), 'Stamp resize.stl');
+  project.stamps = [{ name:'Ink', width:2, height:1, pixels:Uint8Array.of(1,1),
+    source:Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII=', 'base64')) }];
+  const slider = page.locator('#stamp-size');
+  const waitForPreview = () => page.waitForFunction(() => !document.getElementById('apply').disabled);
+  const profiler = await page.context().newCDPSession(page);
+  await profiler.send('Profiler.enable');
+  await profiler.send('Profiler.startPreciseCoverage', { callCount: true, detailed: false });
+  async function refinementsSinceLastCheck() {
+    const { result } = await profiler.send('Profiler.takePreciseCoverage');
+    return result.flatMap(script => script.functions)
+      .filter(fn => fn.functionName === 'projectFootprint')
+      .reduce((total, fn) => total + fn.ranges[0].count, 0);
+  }
+  async function visibleInkPixels() {
+    const clip = await page.locator('#stamp-outline').boundingBox();
+    return app.evaluate(async ({ BrowserWindow }, clip) => {
+      const image = await BrowserWindow.getAllWindows()[0].webContents.capturePage(clip);
+      const bgra = image.toBitmap();
+      let orange = 0;
+      for (let i = 0; i < bgra.length; i += 4) {
+        if (bgra[i + 2] > bgra[i + 1] * 1.4 && bgra[i + 2] > bgra[i] * 1.5) orange++;
+      }
+      return orange;
+    }, Object.fromEntries(Object.entries(clip).map(([name, value]) => [name, Math.round(value)])));
+  }
+  for (const refine of [false, true]) {
+    await fs.writeFile(projectFile, writeProject(project));
+    await click('open');
+    await page.locator('[data-tool="Stamps"]').click();
+    await page.locator('.stamp-choice').click();
+    await page.locator('#refine-stamp').setChecked(refine);
+    await waitForPreview();
+    await slider.scrollIntoViewIfNeeded();
+    const box = await slider.boundingBox(), y = box.y + box.height / 2;
+    await refinementsSinceLastCheck();
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setIgnoreMouseEvents(true));
+    await page.mouse.move(box.x + box.width * 0.12, y);
+    await page.mouse.down();
+    const ink = [];
+    for (const fraction of [0.06, 0.15, 0.09]) {
+      await page.mouse.move(box.x + box.width * fraction, y);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      const width = await slider.inputValue();
+      assert.equal(await page.locator('#stamp-size-value').innerText(), width + ' px');
+      assert.equal(await page.locator('#stamp-outline').evaluate(el => el.style.width), width + 'px');
+      assert.ok(await page.locator('#apply').isDisabled());
+      ink.push(await visibleInkPixels());
+    }
+    assert.ok(ink[0] > 0 && ink[1] > ink[2] && ink[2] > ink[0], 'visible ink grows and shrinks: ' + ink);
+    assert.equal(await refinementsSinceLastCheck(), 0);
+    await page.mouse.move(box.x + box.width * 0.09, y - 35);
+    await page.mouse.up();
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setIgnoreMouseEvents(false));
+    await waitForPreview();
+    assert.equal(await refinementsSinceLastCheck(), refine ? 1 : 0);
+    const width = await slider.inputValue();
+    await slider.press('ArrowRight');
+    await page.waitForFunction(w => document.getElementById('stamp-outline').style.width === w + 'px', Number(width) + 1);
+    await click('apply');
+    await click('save');
+    const stamped = readProject(await fs.readFile(projectFile));
+    assert.ok(stamped.paint.includes(1));
+    assert.equal(stamped.editingContext.sizes.stamp.px, Number(width) + 1);
+    assert.equal(!!stamped.splits, refine);
+  }
 });
 
 test('a rotated stamp stops at the viewport edge during drag, release and reselection', async (t) => {

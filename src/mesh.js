@@ -30,36 +30,66 @@ export function binarySTLFaceCount(bytes) {
 
 export function readSTL(bytes, name) {
   const count = binarySTLFaceCount(bytes);
-  const vertices = [],
-    faces = [],
-    lookup = new Map();
+  checkFaceLimit(count);
+  const faces = count ? new Uint32Array(count * 3) : [];
+  let coordinates = new Float32Array(Math.max(1024, Math.min(count, 65536)) * 3);
+  let next = new Int32Array(coordinates.length / 3);
+  let buckets = new Int32Array(2048);
+  let vertexCount = 0, corners = 0;
+  const coords = new Float32Array(9), bits = new Uint32Array(coords.buffer);
+  const hashVertex = (x, y, z) => Math.imul(Math.imul(x ^ (x >>> 16), 73856093) ^
+    Math.imul(y ^ (y >>> 16), 19349663) ^ Math.imul(z ^ (z >>> 16), 83492791), 2654435761) >>> 0;
+  function growTable() {
+    buckets = new Int32Array(buckets.length * 2);
+    const words = new Uint32Array(coordinates.buffer);
+    for (let id = 0; id < vertexCount; id++) {
+      const i = id * 3;
+      const slot = hashVertex(words[i], words[i + 1], words[i + 2]) & (buckets.length - 1);
+      next[id] = buckets[slot];
+      buckets[slot] = id + 1;
+    }
+  }
   function triangle(values) {
-    if (values.some((v) => !Number.isFinite(v) || Math.abs(v) > 1e12))
-      throw Error('The STL contains invalid coordinates.');
+    for (let i = 0; i < 9; i++) {
+      if (!Number.isFinite(values[i]) || Math.abs(values[i]) > 1e12) throw Error('The STL contains invalid coordinates.');
+      coords[i] = Math.fround(values[i]) || 0;
+    }
     // Test the coordinates at the same precision used by the saved mesh.
-    const coords = values.map(Math.fround);
     const ux = coords[3] - coords[0], uy = coords[4] - coords[1], uz = coords[5] - coords[2];
     const vx = coords[6] - coords[0], vy = coords[7] - coords[1], vz = coords[8] - coords[2];
     if (uy * vz === uz * vy && uz * vx === ux * vz && ux * vy === uy * vx) return;
     for (let j = 0; j < 9; j += 3) {
-      const point = coords.slice(j, j + 3);
-      const key = point.join(',');
-      let id = lookup.get(key);
-      if (id === undefined) {
-        id = vertices.length / 3;
-        vertices.push(...point);
-        lookup.set(key, id);
+      const slot = hashVertex(bits[j], bits[j + 1], bits[j + 2]) & (buckets.length - 1);
+      let id = buckets[slot] - 1;
+      while (id >= 0 && !(coordinates[id * 3] === coords[j] &&
+        coordinates[id * 3 + 1] === coords[j + 1] && coordinates[id * 3 + 2] === coords[j + 2])) id = next[id] - 1;
+      if (id < 0) {
+        id = vertexCount++;
+        if (id === next.length) {
+          const grown = new Float32Array(coordinates.length * 2);
+          grown.set(coordinates);
+          coordinates = grown;
+          const links = new Int32Array(next.length * 2);
+          links.set(next);
+          next = links;
+        }
+        coordinates[id * 3] = coords[j];
+        coordinates[id * 3 + 1] = coords[j + 1];
+        coordinates[id * 3 + 2] = coords[j + 2];
+        next[id] = buckets[slot];
+        buckets[slot] = id + 1;
+        if (vertexCount === buckets.length) growTable();
       }
-      faces.push(id);
+      faces[corners++] = id;
     }
-    checkFaceLimit(faces.length / 3);
+    checkFaceLimit(corners / 3);
   }
   if (count > 0) {
-    checkFaceLimit(count);
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     for (let i = 0; i < count; i++) {
       const start = 84 + i * 50 + 12;
-      triangle(Array.from({ length: 9 }, (_, k) => view.getFloat32(start + k * 4, true)));
+      for (let k = 0; k < 9; k++) coords[k] = view.getFloat32(start + k * 4, true);
+      triangle(coords);
     }
   } else {
     const source = new TextDecoder().decode(bytes);
@@ -74,11 +104,11 @@ export function readSTL(bytes, name) {
       triangle(coords);
     }
   }
-  if (!faces.length) throw Error('The STL contains no usable triangles.');
+  if (!corners) throw Error('The STL contains no usable triangles.');
   return newProject(
     name.replace(/\.stl$/i, ''),
-    Float32Array.from(vertices),
-    Uint32Array.from(faces)
+    coordinates.slice(0, vertexCount * 3),
+    count ? (corners === faces.length ? faces : faces.slice(0, corners)) : Uint32Array.from(faces)
   );
 }
 
@@ -173,10 +203,9 @@ export function sampleProject() {
   return p;
 }
 
-export function makeSurface(p) {
-  const count = p.paint.length;
-  const positions = new Float32Array(count * 9),
-    normals = new Float32Array(p.faces.length);
+export function makeSurface(p, range, normals = sourceNormals(p)) {
+  const count = range ? range.endCell - range.cell : p.paint.length;
+  const positions = new Float32Array(count * 9);
   const owners = new Uint32Array(count);
   const levels = new Uint8Array(count);
   const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
@@ -190,31 +219,38 @@ export function makeSurface(p) {
       positions.set(c, id * 9 + 6);
       owners[id] = face;
       levels[id] = level;
-    }
+    }, range
   );
+  return { positions, normals, owners, levels };
+}
+
+export function sourceNormals(p) {
+  const normals = new Float32Array(p.faces.length);
   for (let f = 0; f < p.depth.length; f++) {
-    const [a, b, c] = Array.from(p.faces.subarray(f * 3, f * 3 + 3), (id) =>
-      p.vertices.subarray(id * 3, id * 3 + 3)
-    );
-    const ux = b[0] - a[0],
-      uy = b[1] - a[1],
-      uz = b[2] - a[2],
-      vx = c[0] - a[0],
-      vy = c[1] - a[1],
-      vz = c[2] - a[2];
+    const a = p.faces[f * 3] * 3, b = p.faces[f * 3 + 1] * 3, c = p.faces[f * 3 + 2] * 3;
+    const v = p.vertices;
+    const ux = v[b] - v[a],
+      uy = v[b + 1] - v[a + 1],
+      uz = v[b + 2] - v[a + 2],
+      vx = v[c] - v[a],
+      vy = v[c + 1] - v[a + 1],
+      vz = v[c + 2] - v[a + 2];
     const nx = uy * vz - uz * vy,
       ny = uz * vx - ux * vz,
       nz = ux * vy - uy * vx,
       len = Math.hypot(nx, ny, nz) || 1;
-    normals.set([nx / len, ny / len, nz / len], f * 3);
+    normals[f * 3] = nx / len;
+    normals[f * 3 + 1] = ny / len;
+    normals[f * 3 + 2] = nz / len;
   }
-  return { positions, normals, owners, levels };
+  return normals;
 }
 
 // Only source-face edges can have different subdivision depths on opposite sides.
 // Build adjacency using topological IDs so nearby disconnected shells stay separate.
-function adjacency(p) {
-  const links = new Int32Array(p.paint.length * 3).fill(-1),
+export function adjacency(p, range, seams) {
+  const cells = range ? range.endCell - range.cell : p.paint.length;
+  const links = new Int32Array(cells * 3).fill(-1),
     extra = new Map();
   const edges = new Map(),
     midpoints = new Map();
@@ -223,7 +259,10 @@ function adjacency(p) {
   const key = (a, b) => Math.min(a, b) * 8388608 + Math.max(a, b);
   function midpoint(a, b) {
     const k = key(a, b);
-    if (!midpoints.has(k)) midpoints.set(k, nextVertex++);
+    if (!midpoints.has(k)) {
+      seams?.midpoint(a, b, nextVertex);
+      midpoints.set(k, nextVertex++);
+    }
     return midpoints.get(k);
   }
   function add(a, b) {
@@ -241,6 +280,7 @@ function adjacency(p) {
       edge(mid, b, half);
       return;
     }
+    seams?.edge(a, b, half);
     const entry = edges.get(k);
     if (entry === undefined) {
       edges.set(k, half);
@@ -268,7 +308,7 @@ function adjacency(p) {
     p,
     (id) => id,
     midpoint,
-    () => {}
+    () => {}, range
   );
   walkPaintCells(
     p,
@@ -279,7 +319,7 @@ function adjacency(p) {
       edge(a, b, h);
       edge(b, c, h + 1);
       edge(c, a, h + 2);
-    }
+    }, range
   );
   return { links, extra };
 }

@@ -1,6 +1,6 @@
 {
   "name": "stl-painter",
-  "version": "1.0.9",
+  "version": "1.0.11",
   "description": "Offline surface painting for STL models with multicolor 3MF export",
   "author": "STL Painter",
   "private": true,
@@ -20,8 +20,9 @@
     "directories": {
       "output": "release"
     },
+    "asarUnpack": ["dist/file-writer.cjs"],
     "files": [
-      "desktop/**/*",
+      "desktop/*.cjs",
       "dist/**/*",
       "README.md",
       "package.json"

@@ -1,6 +1,6 @@
 import { validSplits } from './paint-tree.js';
 import { exportFilaments, MAX_FILAMENTS, MAX_SWATCHES, mixHex, physicalSlots, validRecipe } from './mixes.js';
-import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate';
+import { Zip, ZipDeflate, zipSync, unzipSync, strToU8, strFromU8 } from 'fflate';
 import { checkFaceLimit, MAX_CELLS } from './mesh.js';
 
 const bytes = (a) => new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
@@ -24,7 +24,7 @@ export function writeProject(p) {
   };
   if (p.splits) files['splits.u8'] = p.splits;
   p.stamps.forEach((s, i) => {
-    files['stamps/' + i + '.png'] = s.source;
+    files['stamps/' + i + '.png'] = [s.source, { level: 0 }];
     files['stamps/' + i + '.idx'] = s.pixels;
   });
   return zipSync(files, { level: 4 });
@@ -202,17 +202,31 @@ function xml(s) {
     (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c]
   );
 }
-export function write3MF(p) {
+export function stream3MF(p, write) {
   const { colors, slots, definitions } = exportFilaments(p);
   const header = '<?xml version="1.0" encoding="UTF-8"?>';
-  const segments = [
-    header,
+  const zip = new Zip((error, chunk) => {
+    if (error) throw error;
+    write(chunk);
+  });
+  const model = new ZipDeflate('3D/3dmodel.model', { level: 4 });
+  zip.add(model);
+  let block = '';
+  function append(xml) {
+    block += xml;
+    if (block.length >= 65536) {
+      model.push(strToU8(block));
+      block = '';
+    }
+  }
+  append(
+    header +
     '<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:BambuStudio="http://schemas.bambulab.com/package/2021"><metadata name="BambuStudio:3mfVersion">1</metadata><metadata name="Application">STL Painter</metadata><metadata name="Designer">STL Painter</metadata><resources><object id="1" type="model" name="' +
       xml(p.name) +
-      '"><mesh><vertices>',
-  ];
+      '"><mesh><vertices>'
+  );
   for (let i = 0; i < p.vertices.length; i += 3)
-    segments.push(
+    append(
       '<vertex x="' +
         p.vertices[i] +
         '" y="' +
@@ -221,11 +235,11 @@ export function write3MF(p) {
         p.vertices[i + 2] +
         '"/>'
     );
-  segments.push('</vertices><triangles>');
+  append('</vertices><triangles>');
   const cursor = { cell: 0, node: 0 };
   for (let i = 0; i < p.depth.length; i++) {
     const code = encodePaintTree(p.paint, cursor, p.depth[i], slots, p.splits);
-    segments.push(
+    append(
       '<triangle v1="' +
         p.faces[i * 3] +
         '" v2="' +
@@ -237,7 +251,7 @@ export function write3MF(p) {
         '"/>'
     );
   }
-  segments.push(
+  append(
     '</triangles></mesh></object></resources><build><item objectid="1"/></build></model>'
   );
   const settings = {
@@ -249,27 +263,42 @@ export function write3MF(p) {
     filament_is_support: colors.map(() => '0'),
     filament_diameter: colors.map(() => '1.75'),
   };
-  return zipSync(
-    {
-      '[Content_Types].xml': strToU8(
-        header +
-          '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/><Default Extension="config" ContentType="application/octet-stream"/></Types>'
-      ),
-      '_rels/.rels': strToU8(
-        header +
-          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>'
-      ),
-      '3D/3dmodel.model': strToU8(segments.join('')),
-      'Metadata/project_settings.config': json(settings),
-      'Metadata/model_settings.config': strToU8(
-        header +
-          '<config><object id="1"><metadata key="name" value="' +
-          xml(p.name) +
-          '"/><metadata key="extruder" value="1"/><part id="1" subtype="normal_part"><metadata key="name" value="' +
-          xml(p.name) +
-          '"/><metadata key="extruder" value="1"/></part></object><plate><metadata key="plater_id" value="1"/><model_instance><metadata key="object_id" value="1"/><metadata key="instance_id" value="0"/></model_instance></plate></config>'
-      ),
-    },
-    { level: 4 }
-  );
+  model.push(strToU8(block), true);
+  const metadata = {
+    '[Content_Types].xml': strToU8(
+      header +
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/><Default Extension="config" ContentType="application/octet-stream"/></Types>'
+    ),
+    '_rels/.rels': strToU8(
+      header +
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>'
+    ),
+    'Metadata/project_settings.config': json(settings),
+    'Metadata/model_settings.config': strToU8(
+      header +
+        '<config><object id="1"><metadata key="name" value="' +
+        xml(p.name) +
+        '"/><metadata key="extruder" value="1"/><part id="1" subtype="normal_part"><metadata key="name" value="' +
+        xml(p.name) +
+        '"/><metadata key="extruder" value="1"/></part></object><plate><metadata key="plater_id" value="1"/><model_instance><metadata key="object_id" value="1"/><metadata key="instance_id" value="0"/></model_instance></plate></config>'
+    ),
+  };
+  for (const [name, data] of Object.entries(metadata)) {
+    const entry = new ZipDeflate(name, { level: 4 });
+    zip.add(entry);
+    entry.push(data, true);
+  }
+  zip.end();
+}
+
+export function write3MF(p) {
+  const chunks = [];
+  stream3MF(p, chunk => chunks.push(chunk));
+  const archive = new Uint8Array(chunks.reduce((n, chunk) => n + chunk.length, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    archive.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return archive;
 }

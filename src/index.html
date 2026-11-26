@@ -213,6 +213,9 @@
               </button>
             </div>
             <p id="tool-hint" class="hint"></p>
+            <button id="clear-paint" class="wide" title="Reset the entire model to its base color (Color 1)">
+              <i data-lucide="eraser"></i>Clear all paint
+            </button>
           </section>
         </div>
       </aside>
@@ -224,22 +227,16 @@
     <dialog id="mix-editor" aria-labelledby="mix-title">
       <form method="dialog">
         <h2 id="mix-title">Add mixed color</h2>
-        <div class="mix-layout"><div>
+        <section class="mix-gallery" aria-labelledby="mix-gallery-title">
+          <h3 id="mix-gallery-title">Suggested mixes</h3>
+          <div id="mix-suggestions"></div>
+        </section>
         <label class="control-label" for="mix-count">Filaments</label>
         <select id="mix-count"><option value="2">Two filaments</option><option value="3">Three filaments</option></select>
         <div id="mix-parts"></div>
-        <div id="mix-presets" role="group" aria-label="Two-filament ratio presets">
-          <button type="button" data-share="33">33/67</button>
-          <button type="button" data-share="50">50/50</button>
-          <button type="button" data-share="67">67/33</button>
-        </div>
         <p class="hint">Each filament contributes at least 33%. Shares add up to 100%.</p>
         <p id="mix-preview"><span class="swatch"></span><span></span></p>
         <p id="mix-error" class="hint" role="status"></p>
-        </div><section class="mix-gallery" aria-labelledby="mix-gallery-title">
-          <h3 id="mix-gallery-title">Suggested mixes</h3>
-          <div id="mix-suggestions"></div>
-        </section></div>
         <div class="dialog-actions"><button value="cancel" formnovalidate>Cancel</button><button id="confirm-mix" value="confirm" class="primary">Add mix</button></div>
       </form>
     </dialog>

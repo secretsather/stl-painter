@@ -48,44 +48,80 @@ function clippedProjection(triangle, view) {
 
 // Bounds include thin cells whose tip crosses the brush while their centroid
 // and all raster sample locations miss it. Cache them for this camera pose.
-function cellBounds(view, cache) {
-  if (cache.strokeBounds) return cache.strokeBounds;
-  const { positions, owners } = view.surface;
-  const bounds = new Float32Array(owners.length * 4);
+function* footprintCells(view, cache, { xmin, xmax, ymin, ymax }) {
+  // Crop the camera frustum to this footprint. The BVH visits each intersecting
+  // source-face range once, including occluded faces and subpixel triangles.
+  const width = xmax - xmin + 2, height = ymax - ymin + 2;
+  const projection = new T.Matrix4().set(
+    view.w / width, 0, 0, (view.w - xmin - xmax) / width,
+    0, view.h / height, 0, (ymin + ymax - view.h) / height,
+    0, 0, 1, 0, 0, 0, 0, 1
+  ).multiply(view.camera.projectionMatrix).multiply(view.camera.matrixWorldInverse);
+  const frustum = new T.Frustum().setFromProjectionMatrix(projection);
+  const faces = [];
+  view.tree.shapecast({
+    intersectsBounds: box => frustum.intersectsBox(box),
+    intersectsRange(offset, count) {
+      for (let i = offset; i < offset + count; i++) faces.push(view.tree.resolveTriangleIndex(i));
+      return false;
+    },
+  });
+  faces.sort((a, b) => a - b);
   const pt = new T.Vector3();
-  for (let id = 0; id < owners.length; id++) {
-    let left = Infinity,
-      right = -Infinity,
-      top = Infinity,
-      bottom = -Infinity,
-      clipped = 0;
-    if (!cache.edgeOn?.[owners[id]]) {
-      for (let k = id * 9; k < id * 9 + 9; k += 3) {
-        pt.fromArray(positions, k);
-        screenPoint(pt, view, pt);
-        left = Math.min(left, pt.x);
-        right = Math.max(right, pt.x);
-        top = Math.min(top, pt.y);
-        bottom = Math.max(bottom, pt.y);
-        if (pt.z < -1 || pt.z > 1) clipped++;
+  cache.strokeBounds ??= new Map();
+  for (const face of faces) {
+    if (cache.edgeOn?.[face]) continue;
+    const chunk = view.chunkFor(face, true);
+    const f = face - chunk.range.face;
+    const start = chunk.faceOffsets[f], end = chunk.faceOffsets[f + 1];
+    let tile = cache.strokeBounds.get(chunk);
+    if (!tile) {
+      tile = { bounds: new Float32Array(chunk.data.owners.length * 4),
+        ready: new Uint8Array(chunk.faceOffsets.length - 1) };
+      cache.strokeBounds.set(chunk, tile);
+    }
+    const bounds = tile.bounds;
+    if (!tile.ready[f]) {
+      const { positions } = chunk.data;
+      for (let id = start; id < end; id++) {
+        let left = Infinity,
+          right = -Infinity,
+          top = Infinity,
+          bottom = -Infinity,
+          clipped = 0;
+
+        for (let k = id * 9; k < id * 9 + 9; k += 3) {
+          pt.fromArray(positions, k);
+          screenPoint(pt, view, pt);
+          left = Math.min(left, pt.x);
+          right = Math.max(right, pt.x);
+          top = Math.min(top, pt.y);
+          bottom = Math.max(bottom, pt.y);
+          if (pt.z < -1 || pt.z > 1) clipped++;
+        }
+        if (clipped) {
+          const triangle = [0, 3, 6].map((j) => new T.Vector3().fromArray(positions, id * 9 + j));
+          const polygon = clippedProjection(triangle, view);
+          left = Math.min(...polygon.map((p) => p.x));
+          right = Math.max(...polygon.map((p) => p.x));
+          top = Math.min(...polygon.map((p) => p.y));
+          bottom = Math.max(...polygon.map((p) => p.y));
+        }
+        const k = id * 4;
+        bounds[k] = left;
+        bounds[k + 1] = right;
+        bounds[k + 2] = top;
+        bounds[k + 3] = bottom;
       }
-      if (clipped) {
-        const triangle = [0, 3, 6].map((j) => new T.Vector3().fromArray(positions, id * 9 + j));
-        const polygon = clippedProjection(triangle, view);
-        left = Math.min(...polygon.map((p) => p.x));
-        right = Math.max(...polygon.map((p) => p.x));
-        top = Math.min(...polygon.map((p) => p.y));
-        bottom = Math.max(...polygon.map((p) => p.y));
+      tile.ready[f] = 1;
+    }
+    for (let local = start; local < end; local++) {
+      const k = local * 4;
+      if (bounds[k] <= xmax && bounds[k + 1] >= xmin && bounds[k + 2] <= ymax && bounds[k + 3] >= ymin) {
+        yield chunk.range.cell + local;
       }
     }
-    const k = id * 4;
-    bounds[k] = left;
-    bounds[k + 1] = right;
-    bounds[k + 2] = top;
-    bounds[k + 3] = bottom;
   }
-  cache.strokeBounds = bounds;
-  return bounds;
 }
 
 export class RefinedStroke {
@@ -143,10 +179,8 @@ export class RefinedStroke {
 
   projectFootprint(footprint) {
     const v = this.view,
-      cache = v.picks(),
-      bounds = cellBounds(v, cache);
-    const { positions, owners, levels, normals } = v.surface;
-    const { xmin, xmax, ymin, ymax } = footprint;
+      cache = v.picks();
+    const { normals } = v.surface;
     const painted = [],
       flatNormals = [];
     const paint = (triangle, face, color) => {
@@ -239,14 +273,13 @@ export class RefinedStroke {
       if (typeof result === 'number') this.remaining++;
       return result;
     };
-    for (let id = 0; id < owners.length; id++) {
-      const k = id * 4;
-      if (bounds[k] > xmax || bounds[k + 1] < xmin || bounds[k + 2] > ymax || bounds[k + 3] < ymin)
-        continue;
+    for (const id of footprintCells(v, cache, footprint)) {
+      const chunk = v.chunkFor(id), local = id - chunk.range.cell;
+      const { positions, owners, levels } = chunk.data;
       const old = this.edits.get(id) ?? v.project.paint[id];
       if (old === this.color || (footprint.accepts && !footprint.accepts(id))) continue;
-      const tri = [0, 3, 6].map((j) => new T.Vector3().fromArray(positions, id * 9 + j));
-      const updated = visit(old, tri, owners[id], levels[id]);
+      const tri = [0, 3, 6].map((j) => new T.Vector3().fromArray(positions, local * 9 + j));
+      const updated = visit(old, tri, owners[local], levels[local]);
       if (updated !== old) this.edits.set(id, updated);
     }
     if (painted.length) {

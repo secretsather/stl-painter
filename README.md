@@ -2,7 +2,7 @@
 
 STL Painter is an offline Windows desktop app for preparing multicolor 3D prints. Open an STL, paint the surface, add a logo or lettering, and export a color-painted 3MF for your slicer. Save a painter project if you want to come back and edit it later.
 
-**[Download STL Painter 1.0.9 for Windows (64-bit portable ZIP)](https://github.com/secretsather/stl-painter/releases/download/v1.0.9/STL-Painter-1.0.9-Mix-Layout-Windows-x64.zip)**
+**[Download STL Painter 1.0.11 for Windows (64-bit portable ZIP)](https://github.com/secretsather/stl-painter/releases/download/v1.0.11/STL-Painter-1.0.11-Windows-x64.zip)**
 
 ![STL Painter showing the sample fluted vessel with an orange surface and cream stripe, the view cube, and the four-color palette](assets/stl-painter-workspace.png)
 
@@ -15,6 +15,15 @@ Use **64-bit Windows** with graphics support for WebGL 2.
 3. Open the extracted folder and double-click **STL Painter.exe**. Keep the executable with the accompanying files.
 
 Keep your saved projects in a separate folder. To update a portable copy, extract the new ZIP into its own folder and open your existing projects from there.
+
+## What's new in 1.0.11
+
+- **Resize stamps live.** Drag the pixel-width slider to watch the artwork grow or shrink on the model. With edge refinement enabled, the final subdivision runs once when you release the slider.
+- **Pick a mix by color.** Click a suggested swatch to set its filaments and percentages. The picker shows up to 90 suggestions across the palette, and you can still enter a custom recipe.
+- **Start painting again from the base color.** Click **Clear all paint** to erase the model, including applied stamps and lettering. One **Undo** restores the painting.
+- Opening large models, saving projects, exporting 3MFs, and matching stamp colors now run in the background. Refined strokes and undo update the affected mesh sections, and Fill reuses connectivity across edits.
+
+For timings, memory measurements, and test conditions, see the [performance review](docs/performance-review.md).
 
 ## What's new in 1.0.9
 
@@ -43,6 +52,8 @@ Keep your saved projects in a separate folder. To update a portable copy, extrac
 
 ## Painting tools
 
+Click **Clear all paint** at the bottom of the tool controls to reset the entire model to **Color 1**, including applied stamps and text. Your palette and stamp library stay available. Press **Ctrl+Z** to restore the previous paint in one step.
+
 To paint straight onto an angled face, click **Align to face** in the camera toolbar, then click the polygon. The camera centers on that point and looks straight at the face. Your painting tool resumes immediately. Press **Esc** to cancel before selecting a face.
 
 | Tool | How to use it |
@@ -63,15 +74,15 @@ To paint straight onto an angled face, click **Align to face** in the camera too
 
 ## Palette and printer color limits
 
-**Palette** holds physical filaments. **Mixed colors** below it holds recipes. Click either heading to collapse or expand its list. Click **+** beside Mixed colors and choose **Two filaments** or **Three filaments**. The suggestions show 50/50, 33/67, and 67/33 for every pair, or all three ways to assign the 34% share for every trio. Select a swatch to preview the recipe and click **Add mix** to keep it. Each filament must contribute at least 33%.
+**Palette** holds physical filaments. **Mixed colors** below it holds recipes. Click either heading to collapse or expand its list. Click **+** beside Mixed colors and choose **Two filaments** or **Three filaments**. Pair suggestions use 50/50, 33/67, and 67/33. Trio suggestions give one filament 34% and the other two 33%. Larger palettes show a selection of up to 90 swatches. Select a swatch to preview the recipe and click **Add mix** to keep it. Each filament must contribute at least 33%.
 
-Click a mix to paint with it or click its colored square to edit the recipe. For two filaments, pick **33/67**, **50/50**, **67/33**, or enter a custom split. Mixed swatches use an offline model calibrated on printed PLA. Layer height, surface angle, and the spools you load can affect the printed result. When reopening an older project, a mix keeps its original swatch if updating the preview would make it identical to another color. Its recipe and painted regions are preserved.
+Click a mix to paint with it or click its colored square to edit the recipe. Choose another suggested swatch or edit the percentages directly. Mixed swatches use an offline model calibrated on printed PLA. Layer height, surface angle, and the spools you load can affect the printed result. When reopening an older project, a mix keeps its original swatch if updating the preview would make it identical to another color. Its recipe and painted regions are preserved.
 
 Image stamps match colors by perceptual distance in Oklab. For visually close matches, the importer favors an existing spool, then a saved mix. **Add mixed colors from existing filaments** suggests recipes that improve the image and adds them when you confirm. **Add Color** suggests a spool that fills a gap among the current solids and possible blends. You can edit the suggested color before painting.
 
 The horizontal slice check counts the physical filaments in each painted recipe. A 3MF with mixed paint includes the physical palette in order, the used recipes, and their painted faces. Open it as a **project** in a slicer that supports mixed filaments to load both the geometry and the recipes.
 
-A project can have **1–16 palette colors**. Use **+** to add one or **×** to remove one. If the color is in use, choose a replacement for the model and saved stamps. Removing the base color lets you choose a new base. The last color stays in the palette. **Ctrl+Z** restores a removed color or stamp during the current editing session.
+A project can have **1–16 physical filament colors** and up to **255 total swatches** including mixes. Use **+** to add one or **×** to remove one. If the color is in use, choose a replacement for the model and saved stamps. Removing the base color lets you choose a new base. The last color stays in the palette. **Ctrl+Z** restores a removed color or stamp during the current editing session.
 
 For a four-filament printer, click **Slice colors** in the lower-left of the viewport and set **Colors per horizontal slice** to **4**. A fifth color at the same height triggers a red warning triangle. Click it to see the colors involved and an example height. You can use more than four colors across the whole model if each horizontal slice stays within your limit.
 

@@ -4,6 +4,33 @@ const pairRatios = [[50, 50], [33, 67], [67, 33]];
 const trioRatios = [[33, 33, 34], [33, 34, 33], [34, 33, 33]];
 const recipeKey = parts => parts.map(({slot, percent}) => `${slot}=${percent}`).sort().join(',');
 
+const MAX_SUGGESTIONS = 90;
+
+function suggestedRecipes(physical, current) {
+  const groups = [...filamentGroups(physical)];
+  const makeRecipe = (slots, weights) => slots.map((slot, i) => ({slot, percent: weights[i]}));
+  if (groups.length * 3 <= MAX_SUGGESTIONS) {
+    return groups.flatMap(slots => (slots.length === 2 ? pairRatios : trioRatios)
+      .map(weights => makeRecipe(slots, weights)));
+  }
+
+  // Sample across the entire palette before computing print colors or creating buttons.
+  // Give pairs and trios equal space, cycling through all three presets in each set.
+  const recipes = [];
+  const budget = MAX_SUGGESTIONS / 2;
+  for (const ratios of [pairRatios, trioRatios]) {
+    const size = ratios[0].length;
+    const choices = groups.filter(slots => slots.length === size);
+    const sampled = Array.from({length: budget}, (_, i) =>
+      makeRecipe(choices[Math.floor(i * choices.length / budget)], ratios[i % 3]));
+    if (current?.length === size && !sampled.some(parts => recipeKey(parts) === recipeKey(current))) {
+      sampled[sampled.length - 1] = current;
+    }
+    recipes.push(...sampled);
+  }
+  return recipes;
+}
+
 export function chooseMix(project, slot, accept) {
   const $ = id => document.getElementById(id);
   const dialog = $('mix-editor'), count = $('mix-count'), rows = $('mix-parts');
@@ -43,55 +70,31 @@ export function chooseMix(project, slot, accept) {
         option.disabled = option.value !== select.value && parts.some(part => part.slot === Number(option.value));
     }
   }
-  function showSuggestions(n) {
+  function showSuggestions() {
     const list = $('mix-suggestions');
-    suggestions.clear();
-    const groups = document.createDocumentFragment();
-    for (const slots of filamentGroups(physical)) {
-      if (slots.length !== n) continue;
-      const group = document.createElement('div'), sources = document.createElement('div');
-      const variants = document.createElement('div');
-      group.className = 'mix-group';
-      sources.className = 'mix-sources';
-      variants.className = 'mix-variants';
-      for (const id of slots) {
-        const label = document.createElement('span'), chip = document.createElement('i');
-        chip.style.setProperty('--swatch', project.palette[id]);
-        label.append(chip, 'Color ' + (physical.indexOf(id) + 1));
-        sources.append(label);
-      }
-      for (const weights of n === 2 ? pairRatios : trioRatios) {
-        const recipe = slots.map((id, i) => ({slot: id, percent: weights[i]}));
-        const hex = mixHex(project.palette, recipe), label = recipeLabel(recipe, physical);
-        const button = document.createElement('button'), chip = document.createElement('span');
-        button.type = 'button';
-        button.disabled = occupied.has(hex);
-        button.title = label + ' · ' + hex + (button.disabled ? ' (already in palette)' : '');
-        button.setAttribute('aria-label', button.title);
-        button.setAttribute('aria-pressed', 'false');
-        chip.className = 'swatch';
-        chip.style.setProperty('--swatch', hex);
-        button.append(chip, weights.join('/'));
-        button.onclick = () => {
-          recipe.forEach((part, i) => {
-            const row = rows.children[i];
-            row.querySelector('select').value = part.slot;
-            row.querySelector('input').value = part.percent;
-          });
-          update();
-        };
-        suggestions.set(recipeKey(recipe), button);
-        variants.append(button);
-      }
-      group.append(sources, variants);
-      groups.append(group);
+    const swatches = document.createDocumentFragment();
+    for (const recipe of suggestedRecipes(physical, initial)) {
+      const hex = mixHex(project.palette, recipe);
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.style.setProperty('--swatch', hex);
+      button.disabled = occupied.has(hex);
+      button.title = recipeLabel(recipe, physical) + ' · ' + hex + (button.disabled ? ' (already in palette)' : '');
+      button.setAttribute('aria-label', button.title);
+      button.setAttribute('aria-pressed', 'false');
+      button.onclick = () => {
+        count.value = String(recipe.length);
+        build(recipe);
+      };
+      suggestions.set(recipeKey(recipe), button);
+      swatches.append(button);
     }
-    list.replaceChildren(groups);
-    list.scrollTop = 0;
+    const total = suggestions.size;
+    list.style.setProperty('--columns', Math.min(total, Math.max(10, Math.ceil(Math.sqrt(total * 3)))));
+    list.replaceChildren(swatches);
   }
   function build(previous) {
     const n = Number(count.value);
-    $('mix-presets').hidden = n !== 2;
     const slots = [...new Set([...(previous ?? []).map(p => p.slot), ...physical])];
     rows.replaceChildren();
     for (let i = 0; i < n; i++) {
@@ -126,16 +129,10 @@ export function chooseMix(project, slot, accept) {
       row.append(select, share, '%');
       rows.append(row);
     }
-    showSuggestions(n);
     update();
   }
+  showSuggestions();
   build(initial);
-  for (const button of $('mix-presets').querySelectorAll('button')) button.onclick = () => {
-    const [first, second] = rows.querySelectorAll('input');
-    first.value = button.dataset.share;
-    second.value = 100 - first.valueAsNumber;
-    update();
-  };
   count.onchange = () => build(parts);
   dialog.returnValue = '';
   dialog.onclose = () => {
