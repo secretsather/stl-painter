@@ -12,20 +12,22 @@ import { bounds, makeSurface } from '../src/mesh.js';
 import { fixture } from './fixture.mjs';
 import { checkStampEdges } from './stamp-edges.mjs';
 import { checkStrokeEdges } from './stroke-edges.mjs';
+import { checkPhysicalSizes } from './physical-sizes.mjs';
 
 const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'stl-painter-app-'));
 const stl = path.join(dir, 'Beveled slab.stl'),
-  file = path.join(dir, 'Edited.stlp'),
+  file = path.join(dir, 'Edited project.stlp'),
   out = path.join(dir, 'Painted.3mf'),
   art = path.join(dir, 'Ring.png');
 await fs.writeFile(stl, fixture());
 let app, page;
 const errors = [];
-async function launch() {
+async function launch(inputFile) {
   app = await _electron.launch({
     args: [
       ...(process.env.PAINTER_EXE ? [] : ['.']),
       '--user-data-dir=' + path.join(dir, 'profile'),
+      ...(inputFile ? [inputFile] : []),
     ],
     ...(process.env.PAINTER_EXE ? { executablePath: process.env.PAINTER_EXE } : {}),
   });
@@ -41,13 +43,15 @@ async function launch() {
         canceled: false,
         filePaths: [global.testDialogs.open],
       });
-      dialog.showSaveDialog = async (_, opts) => ({
-        canceled: !!global.testDialogs.cancelSave,
-        filePath:
-          opts.filters[0].extensions[0] === '3mf'
+      dialog.showSaveDialog = async (_, opts) => {
+        global.testDialogs.suggestedPath = opts.defaultPath;
+        return {
+          canceled: !!global.testDialogs.cancelSave,
+          filePath: opts.filters[0].extensions[0] === '3mf'
             ? global.testDialogs.out
             : global.testDialogs.file,
-      });
+        };
+      };
       dialog.showMessageBox = async () => ({ response: global.testDialogs.choice });
     },
     { stl, file, out }
@@ -65,7 +69,9 @@ async function waitIdle() {
 async function save() {
   await click('save');
   await waitIdle();
-  return readProject(new Uint8Array(await fs.readFile(file)));
+  // Undo/redo comparisons concern the artwork, independent of the current view or tool.
+  const { editingContext, ...artwork } = readProject(new Uint8Array(await fs.readFile(file)));
+  return artwork;
 }
 async function expectSavedProject(expected, message) {
   // A failed diff of a subdivided mesh can contain millions of entries.
@@ -194,6 +200,32 @@ try {
   ];
   await range('brush-size', 12);
   const bare = await save();
+  const projectTitle = path.basename(file) + ' — STL Painter v' + version;
+  assert.equal(await windowTitle(), projectTitle);
+  assert.equal(await page.locator('#docname').textContent(), path.basename(file));
+  const align = page.getByRole('button', { name: 'Align to face' });
+  await align.click();
+  await page.mouse.click(box.x + box.width / 2, box.y + 12);
+  assert.equal(await align.getAttribute('aria-pressed'), 'true', 'a miss allows another pick');
+  await page.keyboard.press('Escape');
+  assert.equal(await align.getAttribute('aria-pressed'), 'false');
+  await align.click();
+  await page.mouse.click(...point(36, 0));
+  assert.equal(await align.getAttribute('aria-pressed'), 'false');
+  assert.equal(await page.locator('#view').inputValue(), 'Custom');
+  assert.equal(await page.locator('#tool-title').innerText(), 'Brush');
+  assert.equal(await page.locator('#dirty').isVisible(), false);
+  await expectSavedProject(bare, 'aligning to the bevel leaves the paint untouched');
+  const aligned = readProject(new Uint8Array(await fs.readFile(file))).editingContext.camera;
+  const pivot = new Vector3(...aligned.target);
+  const normal = new Vector3(1, 0, 2).normalize();
+  assert.ok(Math.abs(pivot.x - 36) < 0.4 && Math.abs(pivot.z - 10) < 0.2);
+  assert.ok(new Vector3(...aligned.position).sub(pivot).normalize().dot(normal) > 0.999999);
+  assert.equal(aligned.projection, 'ortho');
+  await page.mouse.click(cx, cy);
+  assert.ok(await page.locator('#dirty').isVisible(), 'the next click paints');
+  await click('undo');
+  await page.locator('#view').selectOption('Top');
   await page.mouse.move(...point(-8, -8));
   await page.mouse.down();
   await page.keyboard.press('Control+z');
@@ -202,9 +234,9 @@ try {
   // Straddle the silhouette in a snapped orthographic view. Only the top
   // has visible area here, even though the brush overlaps the wall in 2D.
   await page.mouse.click(...point(0, -26));
-  assert.equal(await windowTitle(), '• ' + slabTitle);
+  assert.equal(await windowTitle(), '• ' + projectTitle);
   const rim = await save();
-  assert.equal(await windowTitle(), slabTitle);
+  assert.equal(await windowTitle(), projectTitle);
   const rimSurface = makeSurface(rim);
   let wallCells = 0,
     topCells = 0;
@@ -629,21 +661,42 @@ try {
   await click('redo');
   assert.deepEqual((await save()).paint, override.paint);
   await click('undo');
+  await page.locator('#view').selectOption('Front');
+  await chooseTool('Brush');
+  await chooseColor(5);
+  await page.mouse.click(cx, cy);
+  await chooseTool('Eraser');
+  const projection = await page.locator('#projection').innerText();
   const original = await save();
   await fs.rename(stl, stl + '.moved');
   await fs.rename(art, art + '.moved');
   await app.close();
   app = null;
-  await launch();
+  await launch(file);
+  assert.equal(await windowTitle(), projectTitle);
+  assert.equal(await page.locator('#docname').textContent(), path.basename(file));
+  assert.equal(await page.locator('#model-kind').textContent(), 'PAINTER PROJECT');
+  assert.equal(await page.locator('#model-name').textContent(), original.name);
   await app.evaluate(() => {
     global.testDialogs.open = global.testDialogs.file;
   });
-  await click('open');
   await waitIdle();
+  assert.equal(await page.locator('#view').inputValue(), 'Front');
+  assert.equal(await page.locator('#projection').innerText(), projection);
+  assert.equal(await page.locator('[data-tool="Eraser"]').getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.locator('.swatch-row button[aria-pressed]').nth(4).getAttribute('aria-pressed'), 'true');
+  await page.mouse.click(cx, cy);
+  const firstStroke = await save();
+  assert.ok(firstStroke.paint.filter((slot) => slot === 0).length > original.paint.filter((slot) => slot === 0).length,
+    'the first stroke after restarting erases the saved color');
+  await click('undo');
   await expectSavedProject(original);
+  if (projection === 'Orthographic') await click('projection');
+  await page.locator('#view').selectOption('Studio');
   await chooseTool('Stamps');
   assert.equal(await page.locator('.stamp-choice').count(), 1);
   await page.locator('.stamp-choice').click();
+  await range('stamp-size', 160);
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
   await page.locator('#apply:enabled').waitFor();
   await click('apply');
@@ -821,6 +874,32 @@ try {
   await click('save');
   await waitIdle();
   assert.equal((await save()).palette.length, resumed.palette.length + 1);
+  assert.equal(await windowTitle(), projectTitle, 'unsuccessful Save As keeps the project name');
+  const variant = path.join(dir, 'Five colors.v2.STLP');
+  await app.evaluate((_, dest) => {
+    global.testDialogs.file = dest;
+  }, variant);
+  await click('save-as');
+  await waitIdle();
+  assert.equal(await page.locator('#docname').textContent(), path.basename(variant));
+  assert.equal(await windowTitle(), path.basename(variant) + ' — STL Painter v' + version);
+  await click('export');
+  await waitIdle();
+  const suggestedExport = await app.evaluate(() => global.testDialogs.suggestedPath);
+  assert.equal(path.basename(suggestedExport), 'Five colors.v2.3mf');
+  const firstColor = await page.locator('.palette-hex').first().innerText();
+  const secondPicker = page.getByLabel('Edit Color 2', { exact: true });
+  const previousColor = await secondPicker.inputValue();
+  await secondPicker.fill(firstColor.toLowerCase());
+  assert.equal(await secondPicker.inputValue(), previousColor);
+  assert.equal(await page.locator('.palette-hex').nth(1).innerText(), previousColor.toUpperCase());
+  assert.match(await page.locator('#status').innerText(), /Color 1 already uses/);
+  assert.equal(await page.locator('#dirty').isVisible(), false);
+  for (let i = await page.locator('.palette-hex').count(); i < 16; i++) await click('add-color');
+  const colors = await page.locator('.palette-hex').allTextContents();
+  assert.equal(new Set(colors).size, 16);
+  assert.ok(await page.locator('#add-color').isDisabled());
+  await checkPhysicalSizes({ page, app, dir, click, waitIdle, chooseTool, range });
   assert.deepEqual(errors, []);
   console.log('Offline desktop workflow passed. Artifacts: ' + dir);
 } finally {

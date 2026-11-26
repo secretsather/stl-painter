@@ -41,13 +41,17 @@ export async function checkStrokeEdges({ page, app, file, open, save, chooseTool
   const cx = box.x + box.width / 2,
     cy = box.y + box.height / 2,
     y = Math.round(cy + 5);
+  async function readArtwork() {
+    const { editingContext, ...artwork } = readProject(new Uint8Array(await fs.readFile(file)));
+    return artwork;
+  }
   async function drag() {
     await page.mouse.move(cx - 15 * scale, y);
     await page.mouse.down();
     await page.mouse.move(cx + 15 * scale, y, { steps: 14 });
     await page.mouse.up();
     await save();
-    return readProject(new Uint8Array(await fs.readFile(file)));
+    return readArtwork();
   }
   function edgeError(p) {
     const { positions } = makeSurface(p);
@@ -77,17 +81,17 @@ export async function checkStrokeEdges({ page, app, file, open, save, chooseTool
   assert.ok(after.overshoot <= 1 && after.undershoot <= 1, JSON.stringify(after));
   await page.locator('#undo').click();
   await save();
-  assert.deepEqual(readProject(new Uint8Array(await fs.readFile(file))), original);
+  assert.deepEqual(await readArtwork(), original);
   await page.locator('#redo').click();
   await save();
-  assert.deepEqual(readProject(new Uint8Array(await fs.readFile(file))), fine);
+  assert.deepEqual(await readArtwork(), fine);
   await open();
-  assert.deepEqual(readProject(new Uint8Array(await fs.readFile(file))), fine);
+  assert.deepEqual(await readArtwork(), fine);
   await chooseTool('Brush');
   assert.ok(await toggle.isChecked());
   await toggle.uncheck();
   await save();
-  assert.deepEqual(readProject(new Uint8Array(await fs.readFile(file))), fine);
+  assert.deepEqual(await readArtwork(), fine);
   await toggle.check();
   await page.locator('#projection').click();
   console.log('Thin-strip edge error in px:', { coarse: before, refined: after });

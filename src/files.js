@@ -11,6 +11,7 @@ export function writeProject(p) {
       version: p.splits ? 2 : 1,
       name: p.name,
       palette: p.palette,
+      editingContext: p.editingContext,
       stamps: p.stamps.map(({ name, width, height }) => ({ name, width, height })),
     }),
     'vertices.f32': bytes(p.vertices),
@@ -111,14 +112,27 @@ export function readProject(input) {
       fail();
     return { name, width, height, source, pixels };
   });
+  const colors = m.palette.map((hex) => hex.toUpperCase());
+  const palette = [...new Set(colors)];
+  if (palette.length !== colors.length) {
+    // Older projects may use several slots for one color. Keep the first slot
+    // and translate every reference, including transparent artwork pixels.
+    const slots = new Uint8Array(256);
+    colors.forEach((hex, i) => { slots[i] = palette.indexOf(hex); });
+    slots[255] = 255;
+    for (const indices of [paint, ...stamps.map((stamp) => stamp.pixels)]) {
+      for (let i = 0; i < indices.length; i++) indices[i] = slots[indices[i]];
+    }
+  }
   return {
     name: m.name,
     vertices: referencedVertices(vertices, faces),
     faces,
     depth,
     paint,
-    palette: m.palette,
+    palette,
     stamps,
+    ...(m.editingContext && typeof m.editingContext === 'object' && { editingContext: m.editingContext }),
     ...(splits && { splits }),
   };
 }

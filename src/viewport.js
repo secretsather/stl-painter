@@ -91,6 +91,7 @@ export class Viewport {
     this.scene.fog = new T.FogExp2('#e5e9e5', 0.22 / this.span);
     this.rebuildSurface();
     this.fit();
+    this.restoreCamera(p.editingContext?.camera);
   }
   rebuildSurface() {
     if (this.mesh) {
@@ -264,6 +265,35 @@ export class Viewport {
     this.controls.update();
     this.changed();
   }
+  cameraState() {
+    return {
+      position: this.camera.position.toArray(),
+      target: this.controls.target.toArray(),
+      projection: this.camera.isOrthographicCamera ? 'ortho' : 'perspective',
+      ...(this.camera.isOrthographicCamera && { half: this.half, zoom: this.camera.zoom }),
+    };
+  }
+  restoreCamera(state) {
+    const validPoint = (p) => Array.isArray(p) && p.length === 3 &&
+      p.every((n) => Number.isFinite(n) && Math.abs(n) <= Number.MAX_SAFE_INTEGER);
+    if (!validPoint(state?.position) || !validPoint(state.target) ||
+        state.position.every((n, i) => n === state.target[i])) return;
+    const ortho = state.projection === 'ortho';
+    if (!ortho && state.projection !== 'perspective') return;
+    if (ortho && !(Number.isFinite(state.half) && state.half > 0 &&
+        state.half <= Number.MAX_SAFE_INTEGER && state.zoom >= this.controls.minZoom &&
+        state.zoom <= this.controls.maxZoom && Number.isFinite(state.zoom))) return;
+    this.setCamera(state.projection);
+    if (ortho) {
+      this.half = state.half;
+      this.orthographic.zoom = state.zoom;
+      this.updateProjection();
+    }
+    this.controls.target.fromArray(state.target);
+    this.camera.position.fromArray(state.position);
+    this.controls.update();
+    this.changed();
+  }
   fit(view = 'Studio') {
     if (!this.center) return;
     const distance = this.span * 1.75 * Math.max(1, this.h / this.w);
@@ -278,7 +308,19 @@ export class Viewport {
     this.orient(view, distance);
   }
   orient(view, distance = this.camera.position.distanceTo(this.controls.target)) {
-    const direction = viewDirections[view].clone();
+    this.lookFrom(viewDirections[view].clone(), distance);
+  }
+  alignToFace(point) {
+    const hit = this.surfaceHit(point);
+    if (!hit) return false;
+    const normal = hit.face.normal;
+    if (normal.dot(this.raycaster.ray.direction) > 0) normal.negate();
+    const distance = this.camera.position.distanceTo(this.controls.target);
+    this.controls.target.copy(hit.point);
+    this.lookFrom(normal, distance);
+    return true;
+  }
+  lookFrom(direction, distance) {
     // At either pole a tiny azimuth reference keeps +X pointing right.
     if (Math.abs(direction.z) === 1) direction.y = -1e-6;
     this.camera.position.copy(this.controls.target).add(direction.setLength(distance));
@@ -326,6 +368,24 @@ export class Viewport {
       }
     this.pickCache = { ids, edgeOn };
     return this.pickCache;
+  }
+  surfaceHit({ x, y }) {
+    const { camera } = this;
+    camera.updateMatrixWorld();
+    this.raycaster.setFromCamera({ x: 2 * x / this.w - 1, y: 1 - 2 * y / this.h }, camera);
+    const ray = this.raycaster.ray;
+    const forward = ray.direction.dot(camera.getWorldDirection(this.samplePoint));
+    return this.tree.raycastFirst(ray, T.DoubleSide, camera.near / forward, camera.far / forward);
+  }
+  pixelsPerMillimeter(point) {
+    const { camera } = this;
+    const scale = this.h * camera.projectionMatrix.elements[5] / 2;
+    if (camera.isOrthographicCamera) return scale;
+    const hit = this.surfaceHit(point);
+    // At an empty pixel, keep the preview in the orbit target's depth plane.
+    const depth = -this.samplePoint.copy(hit?.point ?? this.controls.target)
+      .applyMatrix4(camera.matrixWorldInverse).z;
+    return scale / Math.max(camera.near, depth);
   }
   pick(x, y) {
     if (x < 0 || y < 0 || x >= this.w || y >= this.h) return -1;

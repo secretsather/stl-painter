@@ -61,6 +61,7 @@ const files = window.painterFiles;
 let p,
   v,
   tool = 'Brush',
+  pickingFace = false,
   selected = 1,
   stampIndex = -1,
   anchor = null,
@@ -94,11 +95,16 @@ function error(err) {
   );
   if (!$('notice').open) $('notice').showModal();
 }
+function setDocumentName(name) {
+  const header = $('docname');
+  header.textContent = name;
+  header.title = name;
+}
 function state() {
   const pendingStroke = !!stroke?.old.size || !!stroke?.refiner?.edits.size;
   const changed = revision !== saved || pendingStroke;
   $('dirty').hidden = !changed;
-  document.title = (changed ? '• ' : '') + p.name + ' — STL Painter';
+  document.title = (changed ? '• ' : '') + $('docname').textContent + ' — STL Painter';
   files.dirty(changed);
   $('undo').disabled = !history.length && !pendingStroke;
   $('redo').disabled = !future.length;
@@ -116,6 +122,9 @@ function record(label, change, weight = 0) {
   refreshColorLimit();
 }
 let textKey, textMask, fontList;
+// Rasterize physical lettering at a stable resolution. Its projected size can
+// change with the camera without changing the font metrics or rebuilding the mask.
+const physicalFontPixels = 96;
 function placingArtwork() {
   return tool === 'Stamps' || tool === 'Text';
 }
@@ -125,7 +134,7 @@ function currentArtwork() {
   const settings = {
     text: $('text-content').value,
     family: $('text-font').value,
-    size: +$('text-size').value,
+    size: sizes.text.physical ? physicalFontPixels : +$('text-size').value,
     bold: $('text-bold').checked,
     italic: $('text-italic').checked,
     align: $('text-align').value,
@@ -166,11 +175,15 @@ function updatePreview() {
     return;
   }
   anchor ??= { x: v.w / 2, y: v.h / 2 };
+  const text = tool === 'Text';
+  const width = text
+    ? artwork.placementWidth * (sizes.text.physical ? sizes.text.pixelsAt(anchor) / physicalFontPixels : 1)
+    : sizes.stamp.pixelsAt(anchor);
   const placement = {
     ...anchor,
-    width: artwork.placementWidth ?? +$('stamp-size').value,
+    width,
     rotation: +$('rotation').value,
-    workspace: tool === 'Stamps' ? { width: v.w, height: v.h } : undefined,
+    workspace: !text && !sizes.stamp.physical ? { width: v.w, height: v.h } : undefined,
     filter: $('filter').checked,
     cutoff: +$('cutoff').value,
   };
@@ -328,6 +341,12 @@ function paletteUI() {
     };
     picker.onchange = () => {
       const next = picker.value.toUpperCase();
+      const existing = p.palette.indexOf(next);
+      if (existing !== -1 && existing !== i) {
+        picker.value = p.palette[i];
+        notify(`Color ${existing + 1} already uses ${next}. Choose a different color.`);
+        return;
+      }
       editPaletteColor(i, next);
       code.textContent = next;
     };
@@ -405,6 +424,7 @@ function toolUI() {
   $('fill-panel').hidden = tool !== 'Fill';
   $('stamp-panel').hidden = tool !== 'Stamps';
   const text = tool === 'Text';
+  if (text) fontList ??= loadFontFamilies($('text-font')).then(schedulePreview);
   $('text-panel').hidden = !text;
   $('stamp-width').hidden = text;
   updatePlacementVisibility();
@@ -416,6 +436,7 @@ function toolUI() {
   $('apply').disabled = !hasPreview();
 }
 function chooseTool(name) {
+  if (pickingFace) setFacePicking(false);
   draggingArtwork = false;
   finishStroke();
   clearPreview();
@@ -426,14 +447,12 @@ function chooseTool(name) {
     anchor = null;
     stampUI();
   }
-  if (tool === 'Text') {
-    fontList ??= loadFontFamilies($('text-font')).then(schedulePreview);
-  }
   toolUI();
   if (tool === 'Text') $('text-content').focus();
   schedulePreview();
 }
-function load(project, kind) {
+function load(project, kind, documentName = project.name) {
+  if (pickingFace) setFacePicking(false);
   draggingArtwork = false;
   if (v?.project) clearPreview();
   p = project;
@@ -442,15 +461,20 @@ function load(project, kind) {
   revision = saved = 0;
   stroke = null;
   anchor = null;
-  selected = Math.min(kind === 'SAMPLE MODEL' ? 2 : 1, p.palette.length - 1);
+  const context = p.editingContext;
+  for (const [name, size] of Object.entries(sizes)) size.restore(context?.sizes?.[name]);
+  const color = typeof context?.color === 'string' ? p.palette.indexOf(context.color.toUpperCase()) : -1;
+  selected = color >= 0 ? color : Math.min(kind === 'SAMPLE MODEL' ? 2 : 1, p.palette.length - 1);
   refineEdges.checked = true;
-  stampIndex = -1;
-  tool = 'Brush';
-  armed = false;
+  tool = typeof context?.tool === 'string' && Object.hasOwn(hints, context.tool) ? context.tool : 'Brush';
+  stampIndex = tool === 'Stamps' && Number.isInteger(context?.stampIndex) &&
+    context.stampIndex >= 0 && context.stampIndex < p.stamps.length ? context.stampIndex : -1;
+  armed = tool === 'Text' || stampIndex >= 0;
   v.setProject(p);
-  $('view').value = 'Studio';
+  $('projection').textContent = v.camera.isOrthographicCamera ? 'Orthographic' : 'Perspective';
   $('model-kind').textContent = kind;
-  $('model-name').textContent = $('docname').textContent = p.name;
+  $('model-name').textContent = p.name;
+  setDocumentName(documentName);
   ['X', 'Y', 'Z'].forEach((axis, i) => {
     $('dimensions').querySelector('.axis-' + axis).textContent = Number(v.box.size[i].toFixed(2));
   });
@@ -484,12 +508,22 @@ async function task(message, fn) {
 async function write(kind) {
   finishStroke();
   const exported = kind === 'export';
-  const data = exported ? write3MF(p) : writeProject(p);
+  const data = exported ? write3MF(p) : writeProject({
+    ...p,
+    editingContext: {
+      camera: v.cameraState(),
+      tool,
+      color: p.palette[selected],
+      sizes: Object.fromEntries(Object.entries(sizes).map(([name, size]) => [name, size.settings()])),
+      ...(tool === 'Stamps' && { stampIndex }),
+    },
+  });
   const name = await files.write(kind, p.name, data);
   if (!name) return false;
   if (!exported) {
     saved = revision;
     $('model-kind').textContent = 'PAINTER PROJECT';
+    setDocumentName(name);
     state();
   }
   notify((exported ? 'Exported ' : 'Saved ') + name);
@@ -502,9 +536,9 @@ async function prepareToLeave() {
   if (answer === 'save') return (await write('save')) ? 'saved' : 'cancel';
   return answer === 'discard' ? 'ready' : 'cancel';
 }
-$('open').onclick = () =>
-  task('Opening model…', async () => {
-    const file = await files.open();
+function openModel(selectFile) {
+  return task('Opening model…', async () => {
+    const file = await selectFile();
     if (!file) return;
     const project = /\.stlp$/i.test(file.name);
     const declared = project ? 0 : binarySTLFaceCount(file.bytes);
@@ -521,9 +555,11 @@ $('open').onclick = () =>
       if (next.depth.length > LARGE_MODEL_FACES && next.depth.length !== faces &&
           !(await files.confirmLargeModel(next.depth.length))) return;
     }
-    load(next, project ? 'PAINTER PROJECT' : 'STL MODEL');
+    load(next, project ? 'PAINTER PROJECT' : 'STL MODEL', project ? file.name : next.name);
     await files.accept();
   });
+}
+$('open').onclick = () => openModel(files.open);
 $('save').onclick = () => task('Saving project…', () => write('save'));
 $('save-as').onclick = () => task('Saving project as…', () => write('saveAs'));
 $('export').onclick = () => task('Preparing 3MF export…', () => write('export'));
@@ -531,10 +567,15 @@ files.onClose(() => task('Closing project…', async () => (await prepareToLeave
 $('undo').onclick = () => undo();
 $('redo').onclick = () => undo(true);
 for (const b of all('[data-tool]')) b.onclick = () => chooseTool(b.dataset.tool);
+// Sixteen distinct suggestions guarantee an unused swatch below the palette limit.
+const suggestedColors = [
+  '#7995AD', '#E5B44C', '#875C93', '#76944F', '#AD4159', '#F7F5EF', '#242629', '#2768A3',
+  '#D890AD', '#805538', '#6CC4BF', '#B3A2D9', '#E46831', '#A9CDE5', '#566C38', '#94765F',
+];
 $('add-color').onclick = () => {
   if (p.palette.length >= 16) return;
   const oldIndex = selected,
-    hex = '#7995AD';
+    hex = suggestedColors.find((color) => !p.palette.includes(color));
   const change = (forward) => {
     if (forward) {
       p.palette.push(hex);
@@ -635,7 +676,77 @@ function range(id, out, suffix, placement = false) {
   $(id).oninput = move;
   move();
 }
-range('brush-size', 'brush-value', ' px');
+let brushCursorPosition = null;
+function refreshBrushCursor() {
+  if (!brushCursorPosition || $('pointer').hidden) return;
+  const diameter = sizes.brush.pixelsAt(brushCursorPosition);
+  $('pointer').style.width = $('pointer').style.height = diameter + 'px';
+}
+function sizeControl(name, outputId) {
+  const slider = $(name + '-size'), number = $(name + '-mm'), unit = $(name + '-unit');
+  const output = $(outputId), label = output.closest('label');
+  const validMillimeters = value => Number.isFinite(value) && value > 0 && value <= 1e12;
+  let millimeters = number.valueAsNumber;
+  function display() {
+    const physical = unit.value === 'mm';
+    slider.hidden = physical;
+    number.hidden = !physical;
+    output.hidden = physical;
+    output.textContent = slider.value + ' px';
+    label.htmlFor = physical ? number.id : slider.id;
+  }
+  function changed() {
+    display();
+    if (name === 'brush') refreshBrushCursor();
+    else if (placingArtwork()) armPreview();
+  }
+  unit.onchange = slider.oninput = changed;
+  number.oninput = () => {
+    if (validMillimeters(number.valueAsNumber)) {
+      millimeters = number.valueAsNumber;
+      changed();
+    }
+  };
+  number.onblur = () => {
+    if (number.valueAsNumber !== millimeters)
+      notify('Kept the last valid size of ' + millimeters + ' mm.');
+    number.value = millimeters;
+  };
+  display();
+  return {
+    get physical() { return unit.value === 'mm'; },
+    pixelsAt(point) {
+      return this.physical ? millimeters * v.pixelsPerMillimeter(point) : +slider.value;
+    },
+    step(direction) {
+      if (this.physical) {
+        const next = Number((millimeters + direction * 0.1).toPrecision(12));
+        if (!validMillimeters(next)) return;
+        number.value = next;
+        number.oninput();
+      } else {
+        slider.value = +slider.value + direction * 2;
+        changed();
+      }
+    },
+    settings() { return { unit: unit.value, mm: millimeters, px: +slider.value }; },
+    restore(settings) {
+      if (!settings || !['mm', 'px'].includes(settings.unit)) return;
+      unit.value = settings.unit;
+      if (validMillimeters(settings.mm)) {
+        millimeters = settings.mm;
+        number.value = millimeters;
+      }
+      if (Number.isFinite(settings.px)) slider.value = settings.px;
+      display();
+    },
+  };
+}
+const sizes = {
+  brush: sizeControl('brush', 'brush-value'),
+  text: sizeControl('text', 'text-size-value'),
+  stamp: sizeControl('stamp', 'stamp-size-value'),
+};
 const refineEdges = $('refine-edges');
 const refineStamp = $('refine-stamp');
 refineStamp.onchange = () => {
@@ -647,10 +758,8 @@ refineStamp.onchange = () => {
   schedulePreview();
 };
 $('text-panel').addEventListener('input', armPreview);
-range('text-size', 'text-size-value', ' px');
 range('angle', 'angle-value', '°');
 range('rotation', 'rotation-value', '°', true);
-range('stamp-size', 'stamp-size-value', ' px', true);
 range('cutoff', 'cutoff-value', '°', true);
 $('filter').onchange = () => {
   $('cutoff-wrap').hidden = !$('filter').checked;
@@ -658,6 +767,13 @@ $('filter').onchange = () => {
   schedulePreview();
 };
 $('help').onclick = () => $('guide').showModal();
+function setFacePicking(active) {
+  pickingFace = active;
+  $('align-face').setAttribute('aria-pressed', String(active));
+  $('pointer').hidden = true;
+  notify(active ? 'Click a model face to align the camera. Esc cancels.' : 'Ready');
+}
+$('align-face').onclick = () => setFacePicking(!pickingFace);
 $('view').onchange = () => v.fit($('view').value);
 $('fit').onclick = () => {
   $('view').value = 'Studio';
@@ -785,18 +901,20 @@ function bindCanvas() {
     pointerId = null;
   function cursor(pos) {
     const el = $('pointer');
-    el.hidden = !['Brush', 'Eraser'].includes(tool);
+    brushCursorPosition = pos;
+    el.hidden = pickingFace || !['Brush', 'Eraser'].includes(tool);
     el.style.left = pos.x + 'px';
     el.style.top = pos.y + 'px';
-    el.style.width = el.style.height = $('brush-size').value + 'px';
+    refreshBrushCursor();
   }
   function dab(a, b) {
+    const radius = sizes.brush.pixelsAt(b) / 2;
     if (stroke.refiner) {
-      stroke.refiner.dab(a, b, +$('brush-size').value / 2);
+      stroke.refiner.dab(a, b, radius);
       state();
       return;
     }
-    v.stroke(a, b, +$('brush-size').value / 2, (id) =>
+    v.stroke(a, b, radius, (id) =>
       setColor(id, tool === 'Eraser' ? 0 : selected)
     );
     v.recolor();
@@ -809,8 +927,15 @@ function bindCanvas() {
       return;
     }
     canvas.focus({ preventScroll: true });
-    if (tool === 'Stamps' && stampIndex < 0) return;
     const pt = point(e);
+    if (pickingFace) {
+      if (v.alignToFace(pt)) {
+        setFacePicking(false);
+        notify('View aligned to face');
+      } else notify('Click a face on the model. Esc cancels.');
+      return;
+    }
+    if (tool === 'Stamps' && stampIndex < 0) return;
     pointerId = e.pointerId;
     canvas.setPointerCapture(e.pointerId);
     if (tool === 'Fill') {
@@ -875,6 +1000,12 @@ window.addEventListener('keydown', (e) => {
   if (busy || e.isComposing || document.querySelector('dialog[open], #slice-details:popover-open')) return;
   const k = e.key.toLowerCase(),
     ctrl = e.ctrlKey || e.metaKey;
+  if (k === 'escape' && pickingFace) {
+    e.preventDefault();
+    setFacePicking(false);
+    v.canvas.focus({ preventScroll: true });
+    return;
+  }
   if (k === 'escape' && placingArtwork()) {
     e.preventDefault();
     if (tool === 'Stamps') anchor = null;
@@ -882,7 +1013,7 @@ window.addEventListener('keydown', (e) => {
     v.canvas.focus({ preventScroll: true });
     return;
   }
-  if (e.target.matches('textarea') && !(ctrl && ['s', 'o'].includes(k))) return;
+  if (e.target.matches('textarea, input[type=number]') && !(ctrl && ['s', 'o'].includes(k))) return;
   if (ctrl) {
     const action = {
       o: 'open',
@@ -911,18 +1042,20 @@ window.addEventListener('keydown', (e) => {
     $('apply').click();
   }
   if (k === '[' || k === ']') {
-    $('brush-size').value = +$('brush-size').value + (k === '[' ? -2 : 2);
-    $('brush-size').oninput();
+    sizes.brush.step(k === '[' ? -1 : 1);
   }
 });
-try {
+async function start() {
   v = new Viewport($('viewport'), (view) => {
     $('view').value = view;
+    refreshBrushCursor();
     schedulePreview();
   });
-  load(sampleProject(), 'SAMPLE MODEL');
+  await openModel(files.openLaunchFile);
+  if (!p) load(sampleProject(), 'SAMPLE MODEL');
   bindCanvas();
-} catch (err) {
+}
+start().catch((err) => {
   error(err);
   notify('The 3D workspace could not start.');
-}
+});

@@ -20,7 +20,7 @@
             <path d="m18 20 10-6v9l-10 6z" fill="#9dbb86" /></svg></span
         >STL Painter
       </div>
-      <span class="header-rule"></span><span id="docname">Fluted vessel</span
+      <span class="header-rule"></span><span id="docname"></span
       ><span id="dirty" title="Unsaved changes" hidden>●</span>
       <div class="header-actions">
         <button id="open"><i data-lucide="folder-open"></i>Open</button>
@@ -37,8 +37,8 @@
       <section id="viewport" aria-label="3D painting viewport">
         <div id="stamp-outline" aria-hidden="true" hidden></div>
         <div class="model-label">
-          <span class="eyebrow" id="model-kind">SAMPLE MODEL</span>
-          <h1 id="model-name">Fluted vessel</h1>
+          <span class="eyebrow" id="model-kind"></span>
+          <h1 id="model-name"></h1>
           <span id="dimensions" role="group" aria-label="Model dimensions in X, Y, Z order"><span class="axis-X"></span> × <span class="axis-Y"></span> × <span class="axis-Z"></span> mm</span>
         </div>
         <svg id="view-cube" viewBox="-60 -60 120 120" role="group" aria-label="View cube"></svg>
@@ -90,6 +90,8 @@
             <option>Bottom</option>
             <option disabled>Custom</option></select
           ><span></span>
+          <button id="align-face" aria-pressed="false" title="Click a model face to view it straight on (Esc to cancel)">Align to face</button
+          ><span></span>
           <button id="projection" title="Toggle orthographic projection">Perspective</button
           ><span></span
           ><button id="fit" class="icon" title="Fit model (Home)" aria-label="Fit model">
@@ -128,7 +130,12 @@
             <div id="brush-panel">
               <label class="control-label" for="brush-size"
                 >Diameter <output id="brush-value">32 px</output></label
-              ><input type="range" id="brush-size" min="2" max="160" value="32" />
+              >
+              <div class="size-control">
+                <input type="range" id="brush-size" min="2" max="160" value="32" />
+                <input type="number" id="brush-mm" min="0" step="any" value="2" hidden />
+                <select id="brush-unit" aria-label="Brush diameter unit"><option>px</option><option>mm</option></select>
+              </div>
               <label class="check"><input type="checkbox" id="refine-edges" checked />Refine stroke edges</label>
             </div>
             <div id="fill-panel" hidden>
@@ -165,13 +172,22 @@
               <label class="control-label" for="text-align">Line alignment</label>
               <select id="text-align"><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select>
               <label class="control-label" for="text-size">Font size <output id="text-size-value"></output></label>
-              <input type="range" id="text-size" min="6" max="180" value="36" />
+              <div class="size-control">
+                <input type="range" id="text-size" min="6" max="180" value="36" />
+                <input type="number" id="text-mm" min="0" step="any" value="4" hidden />
+                <select id="text-unit" aria-label="Font size unit"><option>px</option><option>mm</option></select>
+              </div>
             </div>
             <div id="placement" hidden>
               <div id="stamp-width">
                 <label class="control-label" for="stamp-size"
                   >Width <output id="stamp-size-value"></output></label
-                ><input id="stamp-size" type="range" min="12" max="1200" value="160" />
+                >
+                <div class="size-control">
+                  <input id="stamp-size" type="range" min="12" max="1200" value="160" />
+                  <input type="number" id="stamp-mm" min="0" step="any" value="8" hidden />
+                  <select id="stamp-unit" aria-label="Stamp width unit"><option>px</option><option>mm</option></select>
+                </div>
               </div>
               <label class="control-label" for="rotation"
                 >Rotation <output id="rotation-value">0°</output></label

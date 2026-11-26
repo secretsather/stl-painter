@@ -2,7 +2,7 @@
 
 STL Painter is an offline Windows desktop app for preparing multicolor 3D prints. Open an STL, paint the surface, add a logo or lettering, and export a color-painted 3MF for your slicer. Save a painter project if you want to come back and edit it later.
 
-**[Download STL Painter 1.0.7 for Windows (64-bit ZIP)](https://github.com/secretsather/stl-painter/releases/download/v1.0.7/STL-Painter-1.0.7-Windows-x64.zip)**
+**[Download STL Painter 1.0.8 for Windows (64-bit ZIP)](https://github.com/secretsather/stl-painter/releases/download/v1.0.8/STL-Painter-1.0.8-Windows-x64.zip)**
 
 ![STL Painter showing the sample fluted vessel with an orange surface and cream stripe, the view cube, and the four-color palette](assets/stl-painter-workspace.png)
 
@@ -16,6 +16,14 @@ Use **64-bit Windows** with graphics support for WebGL 2.
 
 Keep your saved projects in a separate folder. To update a portable copy, extract the new ZIP into its own folder and open your existing projects from there.
 
+## What's new in 1.0.8
+
+- Set brush diameter, text size, and stamp width in **millimeters** for repeatable measurements across models and zoom levels.
+- Use **Align to face** to look straight at any visible polygon with one click, then continue painting.
+- Reopen a saved project with its camera, active tool, selected color, and size settings restored. Older projects gain these settings the next time you save them.
+- Open a project by passing its path to **STL Painter.exe**. The title and header show the active project filename, and Export suggests a matching 3MF filename.
+- Each palette color has a unique RGB value. Opening older projects merges duplicate colors while preserving their appearance on the model and in saved stamps.
+
 ## Paint your first model
 
 1. **Open a model.** Click **Open** and choose a binary or ASCII `.stl`, or try the sample vessel. The upper-left readout shows X, Y, and Z dimensions in millimeters.
@@ -26,13 +34,17 @@ Keep your saved projects in a separate folder. To update a portable copy, extrac
 
 ## Painting tools
 
+To paint straight onto an angled face, click **Align to face** in the camera toolbar, then click the polygon. The camera centers on that point and looks straight at the face. Your painting tool resumes immediately. Press **Esc** to cancel before selecting a face.
+
 | Tool | How to use it |
 | --- | --- |
-| **Brush** | Drag to paint the visible surface. Adjust **Diameter**, or zoom in for finer strokes. |
+| **Brush** | Drag to paint the visible surface. Set **Diameter** in pixels or millimeters. |
 | **Fill** | Click to fill across connected faces. **Edge angle** controls how sharp an edge the fill can cross. **Respect paint boundaries** stops the fill at an existing color change. |
 | **Eraser** | Drag to restore the base color. Brush and Eraser share the **Refine stroke edges** setting. |
 | **Stamps** | Select **Import artwork** for a PNG, JPEG, WebP, or BMP. Choose existing palette colors or add colors from the image, then click **Add to stamps**. Adjust width and rotation, drag into position, and click **Apply stamp**. |
 | **Text** | Type a label, choose an installed font and palette color, and set size, bold, italic, or multiline alignment. Position it and click **Apply text**. The project stores applied lettering as surface paint. |
+
+**Physical sizing.** Select **mm** beside Diameter, Font size, or Width and type a measurement. A 2 mm brush and an 8 mm stamp keep their size as you zoom. Brush and Eraser share a diameter. Stamp width includes transparent margins. Font size is the font’s em size, so the visible height depends on the letters and font. Measurements use one STL coordinate unit per millimeter and apply in the view plane at the surface under the cursor or artwork center. Face a flat surface straight on to reproduce a dimension along it. Select **px** for a fixed size on screen.
 
 **Edge refinement** starts on. It subdivides the painted surface along a boundary to smooth strokes, stamp outlines, and lettering. Stamps and text use a quick preview while you drag and refine when you release. **Esc** cancels placement and returns to Brush.
 

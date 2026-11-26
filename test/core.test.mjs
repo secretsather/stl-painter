@@ -188,6 +188,23 @@ test('independent leaf ordering, filament slot compaction, extended colors and p
   corrupt['paint.u8'][0] = 22;
   assert.throws(() => readProject(zipSync(corrupt)), /damaged/);
 });
+test('legacy duplicate colors keep their paint and stamp appearance in one slot', () => {
+  const old = readSTL(fixture(), 'Duplicates.stl');
+  old.palette = ['#AABBCC', '#102030', '#aabbcc', '#102031', '#102030'];
+  old.paint.set([0, 1, 2, 3, 4]);
+  old.stamps = [{
+    name: 'logo', width: 4, height: 1, source: Uint8Array.of(137, 80),
+    pixels: Uint8Array.of(4, 2, 255, 3),
+  }];
+  const project = readProject(writeProject(old));
+  assert.deepEqual(project.palette, ['#AABBCC', '#102030', '#102031']);
+  assert.deepEqual([...project.paint.slice(0, 5)], [0, 1, 0, 2, 1]);
+  assert.deepEqual([...project.stamps[0].pixels], [1, 0, 255, 2]);
+  assert.deepEqual(readProject(writeProject(project)), project);
+  const settings = unzipSync(write3MF(project))['Metadata/project_settings.config'];
+  assert.deepEqual(JSON.parse(strFromU8(settings)).filament_colour, project.palette);
+});
+
 test('stamp mapping retains transparent pixels and honors existing palette and new-color budget', () => {
   const rgba = Uint8Array.of(0, 0, 0, 0, 255, 0, 0, 255, 0, 0, 255, 17);
   const palette = ['#F1F1F1', '#0000FF'];

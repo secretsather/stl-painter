@@ -26,6 +26,11 @@ async function readModelFile(file) {
   if (stat.size > 256 * 1024 * 1024) throw Error('Choose a file smaller than 256 MB.');
   return fs.readFile(file);
 }
+async function selectModelFile(file) {
+  const bytes = await readModelFile(file);
+  pendingPath = /\.stlp$/i.test(file) ? file : null;
+  return { name: path.basename(file), bytes };
+}
 async function decide() {
   const { response } = await dialog.showMessageBox(win, {
     type: 'question',
@@ -62,6 +67,11 @@ app.whenReady().then(() => {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   win.once('ready-to-show', () => win.show());
+  register('open-launch-file', () => {
+    const args = process.argv.slice(process.defaultApp ? 2 : 1);
+    const file = args.find((arg) => !arg.startsWith('-') && /\.stlp?$/i.test(arg));
+    return file ? selectModelFile(path.resolve(file)) : null;
+  });
   register('open', async () => {
     const d = await dialog.showOpenDialog(win, {
       title: 'Open model or painter project',
@@ -72,11 +82,7 @@ app.whenReady().then(() => {
         { name: 'STL model', extensions: ['stl'] },
       ],
     });
-    if (d.canceled) return null;
-    const file = d.filePaths[0];
-    const result = await readModelFile(file);
-    pendingPath = /\.stlp$/i.test(file) ? file : null;
-    return { name: path.basename(file), bytes: result };
+    return d.canceled ? null : selectModelFile(d.filePaths[0]);
   });
   register('read-pending-project', () => {
     if (!pendingPath) throw Error('No project is selected for opening.');
@@ -111,9 +117,10 @@ app.whenReady().then(() => {
       let dest = kind === 'save' ? currentPath : null;
       if (!dest) {
         const ext = project ? '.stlp' : '.3mf';
+        const stem = currentPath ? path.parse(currentPath).name : clean(name);
         const d = await dialog.showSaveDialog(win, {
           title: project ? 'Save painter project' : 'Export 3MF',
-          defaultPath: (project && currentPath) || clean(name) + ext,
+          defaultPath: (project && currentPath) || stem + ext,
           filters: [project ? projectFilter : exportFilter],
         });
         if (d.canceled) return null;

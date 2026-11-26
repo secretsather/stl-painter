@@ -107,7 +107,12 @@ test('reopening after a first save into the selected project loads the new conte
   const saved = await fs.readFile(projectFile);
   assert.equal(readProject(saved).name, current);
   await click('save');
-  assert.deepEqual(readProject(await fs.readFile(projectFile)), readProject(saved));
+  const before = readProject(saved), after = readProject(await fs.readFile(projectFile));
+  // OrbitControls recomputes eye coordinates from spherical angles on reopen.
+  for (const { editingContext } of [before, after]) {
+    editingContext.camera.position = editingContext.camera.position.map(n => Number(n.toFixed(10)));
+  }
+  assert.deepEqual(after, before);
 });
 
 test('reopening a different same-named project saves edits to the original and switches destinations', async (t) => {
@@ -163,7 +168,9 @@ test('a discarded zero-area STL facet does not enlarge the usable model bounds',
   await click('open');
   assert.equal(await page.locator('#dimensions').textContent(), '95 × 52 × 12 mm');
   await click('save');
-  assert.deepEqual(readProject(await fs.readFile(projectFile)), readSTL(slab, path.basename(file)));
+  const { editingContext, ...model } = readProject(await fs.readFile(projectFile));
+  assert.equal(editingContext.tool, 'Brush');
+  assert.deepEqual(model, readSTL(slab, path.basename(file)));
 });
 
 test('large models warn above one million, open through 1.5 million, and reject larger files', async (t) => {

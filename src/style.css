@@ -318,9 +318,13 @@ h1 {
 .viewbar button:hover {
   background: #e3e9dd;
 }
-.toolrail button[aria-pressed='true'] {
+.toolrail button[aria-pressed='true'],
+.viewbar button[aria-pressed='true'] {
   background: var(--olive);
   color: #e7f5d0;
+}
+#viewport:has(#align-face[aria-pressed='true']) > canvas {
+  cursor: crosshair;
 }
 .toolrail button svg {
   width: 19px;
@@ -628,6 +632,21 @@ input[type='range'] {
   font-size: 12px;
   margin: 10px 0;
 }
+.size-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+.size-control input[type='number'],
+.size-control select {
+  min-width: 0;
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fbfcf8;
+  color: inherit;
+}
 #text-panel textarea,
 #text-panel select {
   width: 100%;
@@ -838,8 +857,7 @@ dd {
     top: 18px;
     left: 20px;
   }
-  .header-rule,
-  #docname {
+  .header-rule {
     display: none;
   }
   .toolrail {
