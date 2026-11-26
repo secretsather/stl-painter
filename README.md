@@ -2,7 +2,7 @@
 
 STL Painter is an offline Windows desktop app for preparing multicolor 3D prints. Open an STL, paint the surface, add a logo or lettering, and export a color-painted 3MF for your slicer. Save a painter project if you want to come back and edit it later.
 
-**[Download STL Painter 1.0.8 for Windows (64-bit ZIP)](https://github.com/secretsather/stl-painter/releases/download/v1.0.8/STL-Painter-1.0.8-Windows-x64.zip)**
+**[Download STL Painter 1.0.9 for Windows (64-bit portable ZIP)](https://github.com/secretsather/stl-painter/releases/download/v1.0.9/STL-Painter-1.0.9-Mix-Layout-Windows-x64.zip)**
 
 ![STL Painter showing the sample fluted vessel with an orange surface and cream stripe, the view cube, and the four-color palette](assets/stl-painter-workspace.png)
 
@@ -15,6 +15,15 @@ Use **64-bit Windows** with graphics support for WebGL 2.
 3. Open the extracted folder and double-click **STL Painter.exe**. Keep the executable with the accompanying files.
 
 Keep your saved projects in a separate folder. To update a portable copy, extract the new ZIP into its own folder and open your existing projects from there.
+
+## What's new in 1.0.9
+
+- Preview mixes for every pair or trio of filaments in your palette. Select a suggested swatch, adjust its percentages if needed, then click **Add mix** to paint with it.
+- Browse saved mixes in a collapsible list. Each row shows the name, hex code, and full recipe, including when the sidebar is narrow.
+- Match image stamps to existing spools and mixes by perceived color. The importer can also suggest new mixes from the filaments you already have.
+- Preview blends using a model calibrated on printed PLA. **Add Color** suggests a spool that expands the range of colors your palette can produce.
+- Save recipes in your painter project and export them with painted faces in a 3MF. The horizontal slice check counts the physical filaments each mix uses.
+- Fixed a JavaScript error that could appear when a title update arrived after the app window closed.
 
 ## What's new in 1.0.8
 
@@ -30,7 +39,7 @@ Keep your saved projects in a separate folder. To update a portable copy, extrac
 2. **Choose a color.** Click a palette row to paint with that color. Click its colored square to change the color itself. **Color 1** is the base exposed by the eraser.
 3. **Paint the surface.** Choose **Brush** and left-drag across the model. Right-drag to orbit, hold the mouse wheel and drag to pan, and scroll to zoom. Click a face of the view cube to work straight on.
 4. **Save your work.** Click **Save** to write a self-contained `.stlp` with the model, paint, palette, and stamp library. Use **Ctrl+Shift+S** to save a separate copy.
-5. **Export for printing.** Apply any pending stamp or text, then click **Export (3MF)**. To keep your current printer settings, open your slicer first and import the 3MF into your plate. Check the filament assignments before slicing. Used palette entries are exported in palette order.
+5. **Export for printing.** Apply any pending stamp or text, then click **Export (3MF)**. For solid colors, you can import the 3MF into your existing plate. If you painted with mixed colors, open it as a project in a slicer that supports mixed filaments so the recipes load. Check the filament assignments before slicing.
 
 ## Painting tools
 
@@ -53,6 +62,14 @@ To paint straight onto an angled face, click **Align to face** in the camera too
 **Reusing artwork.** When you return to Stamps, click an imported thumbnail to start a placement. The dotted outline shows its position, including over empty space in the viewport. Click **×** beside a stamp to remove it from the library. Copies already applied to the model keep their paint.
 
 ## Palette and printer color limits
+
+**Palette** holds physical filaments. **Mixed colors** below it holds recipes. Click either heading to collapse or expand its list. Click **+** beside Mixed colors and choose **Two filaments** or **Three filaments**. The suggestions show 50/50, 33/67, and 67/33 for every pair, or all three ways to assign the 34% share for every trio. Select a swatch to preview the recipe and click **Add mix** to keep it. Each filament must contribute at least 33%.
+
+Click a mix to paint with it or click its colored square to edit the recipe. For two filaments, pick **33/67**, **50/50**, **67/33**, or enter a custom split. Mixed swatches use an offline model calibrated on printed PLA. Layer height, surface angle, and the spools you load can affect the printed result. When reopening an older project, a mix keeps its original swatch if updating the preview would make it identical to another color. Its recipe and painted regions are preserved.
+
+Image stamps match colors by perceptual distance in Oklab. For visually close matches, the importer favors an existing spool, then a saved mix. **Add mixed colors from existing filaments** suggests recipes that improve the image and adds them when you confirm. **Add Color** suggests a spool that fills a gap among the current solids and possible blends. You can edit the suggested color before painting.
+
+The horizontal slice check counts the physical filaments in each painted recipe. A 3MF with mixed paint includes the physical palette in order, the used recipes, and their painted faces. Open it as a **project** in a slicer that supports mixed filaments to load both the geometry and the recipes.
 
 A project can have **1–16 palette colors**. Use **+** to add one or **×** to remove one. If the color is in use, choose a replacement for the model and saved stamps. Removing the base color lets you choose a new base. The last color stays in the palette. **Ctrl+Z** restores a removed color or stamp during the current editing session.
 

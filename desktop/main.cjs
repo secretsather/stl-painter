@@ -62,7 +62,7 @@ app.whenReady().then(() => {
   });
   win.on('page-title-updated', (event, title) => {
     event.preventDefault();
-    win.setTitle(title + ' v' + app.getVersion());
+    if (!win.isDestroyed()) win.setTitle(title + ' v' + app.getVersion());
   });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (e) => e.preventDefault());

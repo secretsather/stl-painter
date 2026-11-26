@@ -23,4 +23,5 @@ for (const [name, file] of [
 ]) {
   notices.push(name + '\n\n' + (await readFile('node_modules/' + name + '/' + file, 'utf8')));
 }
+notices.push('Prusa FDM Mixer\n\n' + await readFile('src/vendor/prusa-fdm-mixer/LICENSE', 'utf8'));
 await writeFile('dist/THIRD-PARTY-NOTICES.txt', notices.join('\n\n'));

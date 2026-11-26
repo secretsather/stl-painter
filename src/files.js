@@ -1,4 +1,5 @@
 import { validSplits } from './paint-tree.js';
+import { exportFilaments, MAX_FILAMENTS, MAX_SWATCHES, mixHex, physicalSlots, validRecipe } from './mixes.js';
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate';
 import { checkFaceLimit, MAX_CELLS } from './mesh.js';
 
@@ -6,9 +7,11 @@ const bytes = (a) => new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
 const json = (a) => strToU8(JSON.stringify(a));
 const validColor = (s) => typeof s === 'string' && /^#[\da-f]{6}$/i.test(s);
 export function writeProject(p) {
+  const mixed = Object.keys(p.mixes ?? {}).length > 0;
   const files = {
     'project.json': json({
-      version: p.splits ? 2 : 1,
+      version: mixed ? 4 : p.splits ? 2 : 1,
+      ...(mixed && { mixes: p.mixes, hasSplits: !!p.splits }),
       name: p.name,
       palette: p.palette,
       editingContext: p.editingContext,
@@ -44,6 +47,14 @@ function referencedVertices(vertices, faces) {
   return compact;
 }
 
+// Version 3 stored an arithmetic sRGB preview. If a calibrated preview lands
+// on an occupied hex, retain the old chip so both printable recipes survive.
+function legacyMixHex(palette, parts) {
+  const channels = [1, 3, 5].map(i => Math.round(parts.reduce((sum, part) =>
+    sum + parseInt(palette[part.slot].slice(i, i + 2), 16) * part.percent, 0) / 100));
+  return '#' + channels.map(c => c.toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+
 export function readProject(input) {
   let total = 0;
   const files = unzipSync(input, {
@@ -60,17 +71,41 @@ export function readProject(input) {
     return files[key] || fail();
   }
   const m = JSON.parse(strFromU8(get('project.json')));
-  if (m.version !== 1 && m.version !== 2)
+  if (![1, 2, 3, 4].includes(m.version))
     throw Error('This project requires a different version of STL Painter.');
   if (
     typeof m.name !== 'string' ||
     !Array.isArray(m.palette) ||
     m.palette.length < 1 ||
-    m.palette.length > 16 ||
+    m.palette.length > (m.version >= 3 ? MAX_SWATCHES : MAX_FILAMENTS) ||
     !m.palette.every(validColor) ||
     !Array.isArray(m.stamps)
   )
     fail();
+  if (m.version >= 3) {
+    if (!m.mixes || typeof m.mixes !== 'object' || Array.isArray(m.mixes) ||
+        typeof m.hasSplits !== 'boolean' || m.mixes[0]) fail();
+    const physical = physicalSlots(m);
+    if (!physical.length || physical.length > MAX_FILAMENTS ||
+        new Set(m.palette.map(hex => hex.toUpperCase())).size !== m.palette.length) fail();
+    const occupied = new Set(m.palette.map(hex => hex.toUpperCase()));
+    const selectedHex = typeof m.editingContext?.color === 'string' ? m.editingContext.color.toUpperCase() : '';
+    const selectedSlot = m.palette.findIndex(hex => hex.toUpperCase() === selectedHex);
+    for (const [key, parts] of Object.entries(m.mixes)) {
+      const slot = Number(key);
+      if (!Number.isInteger(slot) || String(slot) !== key || slot < 1 || slot >= m.palette.length ||
+          !validRecipe(parts, physical)) fail();
+      const stored = m.palette[slot].toUpperCase(), calibrated = mixHex(m.palette, parts);
+      if (m.version === 4 && stored === calibrated) continue;
+      if (stored !== legacyMixHex(m.palette, parts)) fail();
+      if (m.version === 3 && !occupied.has(calibrated)) {
+        occupied.delete(stored);
+        occupied.add(calibrated);
+        m.palette[slot] = calibrated;
+      }
+    }
+    if (selectedSlot >= 0) m.editingContext.color = m.palette[selectedSlot];
+  }
   const typed = (key, Type) => {
     const b = get(key);
     if (b.length % 4) fail();
@@ -80,7 +115,7 @@ export function readProject(input) {
     faces = typed('faces.u32', Uint32Array);
   const depth = get('depth.u8'),
     paint = get('paint.u8');
-  const splits = m.version === 2 ? get('splits.u8') : undefined;
+  const splits = m.version === 2 || (m.version >= 3 && m.hasSplits) ? get('splits.u8') : undefined;
   checkFaceLimit(depth.length);
   const roots = depth.reduce((n, d) => n + 4 ** d, 0);
   if (
@@ -132,6 +167,7 @@ export function readProject(input) {
     paint,
     palette,
     stamps,
+    ...(m.version >= 3 && { mixes: m.mixes }),
     ...(m.editingContext && typeof m.editingContext === 'object' && { editingContext: m.editingContext }),
     ...(splits && { splits }),
   };
@@ -139,7 +175,8 @@ export function readProject(input) {
 
 function leafCode(slot) {
   if (slot <= 2) return String(slot * 4);
-  return (slot - 3).toString(16).toUpperCase() + 'C';
+  const extra = slot - 3;
+  return (extra % 15).toString(16).toUpperCase() + 'F'.repeat(Math.floor(extra / 15)) + 'C';
 }
 function encodePaintTree(paint, cursor, depth, slots, splits) {
   let count = 4,
@@ -153,7 +190,7 @@ function encodePaintTree(paint, cursor, depth, slots, splits) {
   const children = Array.from({ length: count }, () =>
     encodePaintTree(paint, cursor, Math.max(0, depth - 1), slots, splits)
   );
-  if (children[0].length <= 2 && children.every((s) => s === children[0])) return children[0];
+  if (/[048C]$/.test(children[0]) && children.every((s) => s === children[0])) return children[0];
   return children.join('') + splitCode;
 }
 export function paintTree(paint, start, count, slots) {
@@ -166,9 +203,7 @@ function xml(s) {
   );
 }
 export function write3MF(p) {
-  const used = [...new Set(p.paint)].sort((a, b) => a - b);
-  const colors = used.map((i) => p.palette[i].toUpperCase());
-  const slots = p.palette.map((_, i) => used.indexOf(i) + 1);
+  const { colors, slots, definitions } = exportFilaments(p);
   const header = '<?xml version="1.0" encoding="UTF-8"?>';
   const segments = [
     header,
@@ -208,8 +243,10 @@ export function write3MF(p) {
   const settings = {
     version: '2.3.2.0',
     filament_colour: colors,
+    ...(definitions && { mixed_filament_definitions: definitions }),
     filament_settings_id: colors.map(() => 'Generic PLA'),
     filament_type: colors.map(() => 'PLA'),
+    filament_is_support: colors.map(() => '0'),
     filament_diameter: colors.map(() => '1.75'),
   };
   return zipSync(

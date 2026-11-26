@@ -115,12 +115,19 @@
         <div class="inspector-body">
           <section class="panel">
             <div class="section-head">
-              <h2>Palette</h2>
+              <h2><button class="panel-toggle" aria-expanded="true" aria-controls="palette">Palette</button></h2>
               <button id="add-color" class="small-icon" title="Add color" aria-label="Add color">
                 <i data-lucide="plus"></i>
               </button>
             </div>
             <div id="palette"></div>
+          </section>
+          <section class="panel">
+            <div class="section-head">
+              <h2><button class="panel-toggle" aria-expanded="true" aria-controls="mixed-colors">Mixed colors</button></h2>
+              <button id="add-mix" class="small-icon" title="Add mixed color" aria-label="Add mixed color"><i data-lucide="plus"></i></button>
+            </div>
+            <div id="mixed-colors"></div>
           </section>
           <section class="panel tool-panel">
             <div class="section-head">
@@ -214,6 +221,28 @@
       <span class="status-dot"></span><span id="status" role="status">Ready</span
       ><span id="faces"></span>
     </footer>
+    <dialog id="mix-editor" aria-labelledby="mix-title">
+      <form method="dialog">
+        <h2 id="mix-title">Add mixed color</h2>
+        <div class="mix-layout"><div>
+        <label class="control-label" for="mix-count">Filaments</label>
+        <select id="mix-count"><option value="2">Two filaments</option><option value="3">Three filaments</option></select>
+        <div id="mix-parts"></div>
+        <div id="mix-presets" role="group" aria-label="Two-filament ratio presets">
+          <button type="button" data-share="33">33/67</button>
+          <button type="button" data-share="50">50/50</button>
+          <button type="button" data-share="67">67/33</button>
+        </div>
+        <p class="hint">Each filament contributes at least 33%. Shares add up to 100%.</p>
+        <p id="mix-preview"><span class="swatch"></span><span></span></p>
+        <p id="mix-error" class="hint" role="status"></p>
+        </div><section class="mix-gallery" aria-labelledby="mix-gallery-title">
+          <h3 id="mix-gallery-title">Suggested mixes</h3>
+          <div id="mix-suggestions"></div>
+        </section></div>
+        <div class="dialog-actions"><button value="cancel" formnovalidate>Cancel</button><button id="confirm-mix" value="confirm" class="primary">Add mix</button></div>
+      </form>
+    </dialog>
     <dialog id="remove-color-dialog" aria-labelledby="remove-color-title">
       <form method="dialog">
         <h2 id="remove-color-title"></h2>
@@ -246,6 +275,7 @@
         ><select id="mapping-mode">
           <option value="existing">Use existing colors</option>
           <option value="add">Add colors from image</option>
+          <option value="mix">Add mixed colors from existing filaments</option>
         </select>
         <div id="limit-row" hidden>
           <label class="control-label" for="limit"

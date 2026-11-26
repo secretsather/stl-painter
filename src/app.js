@@ -30,6 +30,8 @@ import { readProject, writeProject, write3MF } from './files.js';
 import { textArtwork, loadFontFamilies } from './text-artwork.js';
 import { setupColorLimit } from './color-limit.js';
 import { mapImage, stampCanvas, loadArtwork } from './stamps.js';
+import { MAX_FILAMENTS, MAX_SWATCHES, physicalSlots, filamentMasks, mixHex, mixCandidates, recipeLabel, suggestFilament } from './mixes.js';
+import { chooseMix } from './mix-editor.js';
 
 const $ = (id) => document.getElementById(id),
   all = (q) => [...document.querySelectorAll(q)];
@@ -81,7 +83,8 @@ let history = [],
   conversion = null;
 const refreshColorLimit = setupColorLimit(() => ({
   paint: p.paint,
-  palette: p.palette,
+  palette: physicalSlots(p).map(slot => p.palette[slot]),
+  masks: filamentMasks(p),
   positions: v.surface.positions,
   bottom: v.box.min[2],
 }));
@@ -304,17 +307,38 @@ function removeButton(label, action) {
   button.onclick = action;
   return button;
 }
+function swatchName(slot) {
+  return p.mixes?.[slot] ? 'Mix ' + (Object.keys(p.mixes).indexOf(String(slot)) + 1)
+    : 'Color ' + (physicalSlots(p).indexOf(slot) + 1);
+}
+function setExpanded(button, expanded) {
+  button.setAttribute('aria-expanded', String(expanded));
+  $(button.getAttribute('aria-controls')).hidden = !expanded;
+}
+for (const button of all('.panel-toggle')) {
+  button.onclick = () => setExpanded(button, button.getAttribute('aria-expanded') !== 'true');
+}
+function revealPanel(id) {
+  setExpanded(document.querySelector(`[aria-controls="${id}"]`), true);
+}
 function paletteUI() {
   const list = $('palette');
   list.replaceChildren();
+  const mixedList = $('mixed-colors'), physical = physicalSlots(p);
+  mixedList.replaceChildren();
   p.palette.forEach((hex, i) => {
     const row = document.createElement('div');
     row.className = 'swatch-row';
-    const name = 'Color ' + (i + 1);
-    const picker = document.createElement('input');
-    picker.type = 'color';
-    picker.className = 'palette-picker';
-    picker.value = hex;
+    const name = swatchName(i), parts = p.mixes?.[i];
+    const picker = document.createElement(parts ? 'button' : 'input');
+    if (parts) {
+      picker.className = 'mix-chip';
+      picker.style.setProperty('--swatch', hex);
+    } else {
+      picker.type = 'color';
+      picker.className = 'palette-picker';
+      picker.value = hex;
+    }
     picker.title = 'Edit ' + name;
     picker.setAttribute('aria-label', picker.title);
     const b = document.createElement('button');
@@ -323,7 +347,21 @@ function paletteUI() {
     const code = document.createElement('span');
     code.className = 'palette-hex';
     code.textContent = hex.toUpperCase();
-    b.append(code, document.createTextNode(name));
+    if (parts) {
+      b.className = 'mix-choice';
+      const heading = document.createElement('span');
+      heading.className = 'mix-heading';
+      heading.append(name, code);
+      const recipe = document.createElement('small');
+      parts.forEach((part, index) => {
+        const ingredient = document.createElement('span');
+        ingredient.textContent = (index ? '+ ' : '') + recipeLabel([part], physical);
+        if (index) recipe.append(' ');
+        recipe.append(ingredient);
+      });
+      b.setAttribute('aria-description', recipe.textContent);
+      b.append(heading, recipe);
+    } else b.append(code, document.createTextNode(name));
     if (i === 0) {
       const tag = document.createElement('span');
       tag.className = 'base';
@@ -333,29 +371,37 @@ function paletteUI() {
     const icon = document.createElement('i');
     icon.dataset.lucide = 'check';
     b.append(icon);
-    b.onclick = picker.onclick = () => {
-      list.querySelector('[aria-pressed="true"]')?.setAttribute('aria-pressed', 'false');
+    b.onclick = () => {
+      document.querySelector('.swatch-row [aria-pressed="true"]')?.setAttribute('aria-pressed', 'false');
       selected = i;
       if (tool === 'Text') armPreview();
       b.setAttribute('aria-pressed', 'true');
     };
+    picker.onclick = parts ? () => editMix(i) : b.onclick;
     picker.onchange = () => {
       const next = picker.value.toUpperCase();
       const existing = p.palette.indexOf(next);
       if (existing !== -1 && existing !== i) {
         picker.value = p.palette[i];
-        notify(`Color ${existing + 1} already uses ${next}. Choose a different color.`);
+        notify(`${swatchName(existing)} already uses ${next}. Choose a different color.`);
         return;
       }
       editPaletteColor(i, next);
-      code.textContent = next;
     };
     row.append(picker, b);
     if (p.palette.length > 1) row.append(removeButton('Remove ' + name, () => requestColorRemoval(i)));
-    list.append(row);
+    (parts ? mixedList : list).append(row);
   });
   createIcons({ icons: { Check }, root: list });
-  $('add-color').disabled = p.palette.length >= 16;
+  createIcons({ icons: { Check }, root: mixedList });
+  if (!mixedList.childElementCount) {
+    const hint = document.createElement('span');
+    hint.className = 'hint';
+    hint.textContent = physical.length < 2 ? 'Add a second filament to create a mix.' : 'Use + to mix two or three filaments.';
+    mixedList.append(hint);
+  }
+  $('add-color').disabled = physical.length >= MAX_FILAMENTS || p.palette.length >= MAX_SWATCHES;
+  $('add-mix').disabled = physical.length < 2 || p.palette.length >= MAX_SWATCHES;
 }
 function stampUI() {
   const list = $('stamp-list');
@@ -567,15 +613,11 @@ files.onClose(() => task('Closing project…', async () => (await prepareToLeave
 $('undo').onclick = () => undo();
 $('redo').onclick = () => undo(true);
 for (const b of all('[data-tool]')) b.onclick = () => chooseTool(b.dataset.tool);
-// Sixteen distinct suggestions guarantee an unused swatch below the palette limit.
-const suggestedColors = [
-  '#7995AD', '#E5B44C', '#875C93', '#76944F', '#AD4159', '#F7F5EF', '#242629', '#2768A3',
-  '#D890AD', '#805538', '#6CC4BF', '#B3A2D9', '#E46831', '#A9CDE5', '#566C38', '#94765F',
-];
 $('add-color').onclick = () => {
-  if (p.palette.length >= 16) return;
-  const oldIndex = selected,
-    hex = suggestedColors.find((color) => !p.palette.includes(color));
+  revealPanel('palette');
+  const physical = physicalSlots(p);
+  if (physical.length >= MAX_FILAMENTS || p.palette.length >= MAX_SWATCHES) return;
+  const oldIndex = selected, hex = suggestFilament(p);
   const change = (forward) => {
     if (forward) {
       p.palette.push(hex);
@@ -592,10 +634,32 @@ $('add-color').onclick = () => {
   paletteUI();
   schedulePreview();
 };
+$('add-mix').onclick = () => editMix();
+function editMix(id) {
+  chooseMix(p, id, parts => {
+    const slot = id ?? p.palette.length, old = p.mixes?.[slot], previous = selected;
+    const before = p.mixes ?? {}, after = { ...before, [slot]: parts };
+    const change = forward => {
+      p.mixes = forward ? after : before;
+      if (forward || old) p.palette[slot] = mixHex(p.palette, forward ? parts : old);
+      else p.palette.pop();
+      selected = forward ? slot : previous;
+      v.refreshPalette();
+    };
+    clearPreview();
+    change(true);
+    record(old ? 'Edited mixed color' : 'Added mixed color', change);
+    revealPanel('mixed-colors');
+    paletteUI();
+    stampUI();
+    schedulePreview();
+  });
+}
 function requestColorRemoval(id) {
   finishStroke();
   if (p.palette.length <= 1) return;
-  if (id !== 0 && !p.paint.includes(id) && !p.stamps.some((stamp) => stamp.pixels.includes(id))) {
+  const dependent = Object.keys(p.mixes ?? {}).map(Number).filter(slot => p.mixes[slot].some(part => part.slot === id));
+  if (!dependent.length && id !== 0 && !p.paint.includes(id) && !p.stamps.some((stamp) => stamp.pixels.includes(id))) {
     removePaletteColor(id, 0);
     return;
   }
@@ -603,30 +667,39 @@ function requestColorRemoval(id) {
   const options = $('replacement-color');
   options.replaceChildren();
   p.palette.forEach((hex, i) => {
-    if (i !== id) options.add(new Option(`Color ${i + 1}${i === 0 ? ' (base)' : ''} · ${hex}`, String(i)));
+    if (i !== id && !dependent.includes(i) && !(id === 0 && p.mixes?.[i]))
+      options.add(new Option(`${swatchName(i)}${i === 0 ? ' (base)' : ''} · ${hex}`, String(i)));
   });
-  $('remove-color-title').textContent = 'Remove Color ' + (id + 1) + '?';
+  $('remove-color-title').textContent = 'Remove ' + swatchName(id) + '?';
   $('remove-color-description').textContent = id === 0
     ? 'Choose the new base color. It will also replace this color on painted surfaces and in saved stamps.'
     : 'This color is in use. Choose its replacement for painted surfaces and saved stamps.';
+  if (dependent.length) $('remove-color-description').textContent +=
+    ' These mixes will also be removed and their paint replaced: ' + dependent.map(swatchName).join(', ') + '.';
   dialog.returnValue = '';
   dialog.onclose = () => {
-    if (dialog.returnValue === 'remove') removePaletteColor(id, Number(options.value));
+    if (dialog.returnValue === 'remove') removePaletteColor(id, Number(options.value), dependent);
   };
   dialog.showModal();
 }
 
-function removePaletteColor(id, replacement) {
+function removePaletteColor(id, replacement, dependent = []) {
   if (p.palette.length <= 1 || id === replacement) return;
   const previousSelection = selected;
+  const name = swatchName(id);
   const original = p.palette.slice();
-  const kept = original.map((_, index) => index).filter((index) => index !== id);
+  const removed = new Set([id, ...dependent]);
+  const kept = original.map((_, index) => index).filter(index => !removed.has(index));
   if (id === 0) {
     kept.splice(kept.indexOf(replacement), 1);
     kept.unshift(replacement);
   }
   const remaining = kept.map((index) => original[index]);
-  const slots = original.map((_, index) => kept.indexOf(index === id ? replacement : index));
+  const slots = original.map((_, index) => kept.indexOf(removed.has(index) ? replacement : index));
+  const beforeMixes = p.mixes ?? {}, afterMixes = {};
+  for (const index of kept) {
+    if (beforeMixes[index]) afterMixes[slots[index]] = beforeMixes[index].map(part => ({ ...part, slot: slots[part.slot] }));
+  }
   const remap = (index) => index === 255 ? 255 : slots[index];
   // Preserve the original arrays so undo can separate the merged colors again.
   const updates = [];
@@ -642,29 +715,41 @@ function removePaletteColor(id, replacement) {
   for (const stamp of p.stamps) prepare(stamp, 'pixels');
   const change = (forward) => {
     p.palette = (forward ? remaining : original).slice();
+    p.mixes = forward ? afterMixes : beforeMixes;
     for (const { owner, key, before, after } of updates) owner[key] = forward ? after : before;
     selected = forward ? remap(previousSelection) : previousSelection;
     v.refreshPalette();
   };
   clearPreview();
   change(true);
-  record('Removed Color ' + (id + 1), change, weight);
+  record('Removed ' + name, change, weight);
   paletteUI();
   stampUI();
   schedulePreview();
-  $('palette').querySelector('[aria-pressed="true"]').focus({ preventScroll: true });
+  document.querySelector('.swatch-row [aria-pressed="true"]')?.focus({ preventScroll: true });
 }
 
 function editPaletteColor(id, next) {
   const prev = p.palette[id];
   if (prev.toUpperCase() === next) return;
+  const original = p.palette.slice(), updated = original.slice();
+  updated[id] = next;
+  for (const [slot, parts] of Object.entries(p.mixes ?? {})) {
+    if (parts.some(part => part.slot === id)) updated[slot] = mixHex(updated, parts);
+  }
+  if (new Set(updated).size !== updated.length) {
+    notify('This edit would create duplicate colors. Choose a different color.');
+    paletteUI();
+    return;
+  }
   const change = (forward) => {
-    p.palette[id] = forward ? next : prev;
+    p.palette = (forward ? updated : original).slice();
     v.refreshPalette();
   };
   clearPreview();
   change(true);
-  record('Changed Color ' + (id + 1), change);
+  record('Changed ' + swatchName(id), change);
+  paletteUI();
   stampUI();
   schedulePreview();
 }
@@ -793,11 +878,12 @@ $('image-input').onchange = async () => {
     art = await loadArtwork(file);
     if (p.stamps.reduce((n, s) => n + s.source.length, 0) + art.source.length > 96 * 1024 * 1024)
       throw Error('The project artwork limit is 96 MB.');
-    $('limit').max = Math.max(1, 16 - p.palette.length);
-    $('limit').value = Math.min(3, 16 - p.palette.length);
+    $('limit').value = 3;
     $('mapping-mode').value = 'existing';
     $('stamp-opacity').value = $('stamp-opacity').defaultValue;
-    $('mapping-mode').options[1].disabled = p.palette.length >= 16;
+    const physical = physicalSlots(p);
+    $('mapping-mode').options[1].disabled = physical.length >= MAX_FILAMENTS || p.palette.length >= MAX_SWATCHES;
+    $('mapping-mode').options[2].disabled = physical.length < 2 || p.palette.length >= MAX_SWATCHES;
     $('image-name').textContent = art.name;
     $('show-removed').checked = false;
     convert();
@@ -806,13 +892,19 @@ $('image-input').onchange = async () => {
   });
 };
 function convert() {
-  const add = $('mapping-mode').value === 'add';
-  $('limit-row').hidden = !add;
+  const mode = $('mapping-mode').value;
+  const physical = physicalSlots(p);
+  const capacity = Math.min(MAX_SWATCHES - p.palette.length,
+    mode === 'mix' ? MAX_SWATCHES : MAX_FILAMENTS - physical.length);
+  $('limit').max = Math.max(1, capacity);
+  $('limit-row').hidden = mode === 'existing';
   $('limit-value').textContent = $('limit').value;
   const cutoff = +$('stamp-opacity').value;
   $('stamp-opacity-value').textContent = cutoff + '%';
   $('stamp-opacity').setAttribute('aria-valuetext', cutoff + '%');
-  conversion = mapImage(art.data, p.palette, add ? +$('limit').value : 0, cutoff);
+  conversion = mapImage(art.data, p.palette, mode === 'existing' ? 0 : +$('limit').value, cutoff, {
+    capacity, mixes: p.mixes, candidates: mode === 'mix' ? mixCandidates(p) : undefined,
+  });
   const palette = [...p.palette, ...conversion.added];
   renderImportPreview();
   $('mapped-colors').replaceChildren();
@@ -824,7 +916,9 @@ function convert() {
     const sw = document.createElement('span');
     sw.className = 'swatch';
     sw.style.setProperty('--swatch', palette[i]);
-    sw.title = 'Color ' + (i + 1) + (i >= p.palette.length ? ' (new)' : '');
+    const recipe = p.mixes?.[i] ?? conversion.recipes?.[i - p.palette.length];
+    sw.title = recipe ? recipeLabel(recipe, physical) : palette[i];
+    if (i >= p.palette.length) sw.title += ' (new)';
     $('mapped-colors').append(sw);
   }
 }
@@ -843,7 +937,10 @@ $('mapping').onclose = () => {
     stamp.pixels = conversion.pixels;
     const added = conversion.added,
       prior = stampIndex;
+    const beforeMixes = p.mixes ?? {}, afterMixes = { ...beforeMixes };
+    conversion.recipes?.forEach((parts, i) => { afterMixes[p.palette.length + i] = parts; });
     const change = (forward) => {
+      p.mixes = forward ? afterMixes : beforeMixes;
       if (forward) {
         p.palette.push(...added);
         p.stamps.push(stamp);

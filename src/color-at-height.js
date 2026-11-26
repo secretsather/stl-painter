@@ -20,9 +20,10 @@ function countColors(mask) {
   return n;
 }
 
-export function findColorConflict(heights, paint, limit) {
+export function findColorConflict(heights, paint, limit, masks) {
+  const sourceMask = slot => masks ? masks[slot] : 1 << slot;
   let used = 0;
-  for (const color of paint) used |= 1 << color;
+  for (const color of paint) used |= sourceMask(color);
   if (countColors(used) <= limit) return null;
 
   // Union each color's occupied bands before comparing colors. A single
@@ -41,10 +42,13 @@ export function findColorConflict(heights, paint, limit) {
     const lo = heights[2 * i],
       hi = heights[2 * i + 1],
       color = paint[i];
-    if (lo === hi) event(lo).flat |= 1 << color;
+    const mask = sourceMask(color);
+    if (lo === hi) event(lo).flat |= mask;
     else {
-      const spans = bands[color];
-      if (hi > (spans.get(lo) ?? -Infinity)) spans.set(lo, hi);
+      for (let bits = mask; bits; bits &= bits - 1) {
+        const spans = bands[31 - Math.clz32(bits & -bits)];
+        if (hi > (spans.get(lo) ?? -Infinity)) spans.set(lo, hi);
+      }
     }
   }
   for (let color = 0; color < bands.length; color++) {

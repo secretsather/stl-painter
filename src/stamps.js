@@ -1,30 +1,18 @@
-const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
-function distance(a, b) {
-  return 0.3 * (a[0] - b[0]) ** 2 + 0.59 * (a[1] - b[1]) ** 2 + 0.11 * (a[2] - b[2]) ** 2;
-}
-function nearest(point, colors) {
-  let best = 0,
-    score = Infinity;
-  colors.forEach((c, i) => {
-    const d = distance(point, c);
-    if (d < score) {
-      best = i;
-      score = d;
-    }
-  });
-  return [best, score];
-}
-export function mapImage(data, palette, limit = 0, opacityPercent = 0) {
+import { rgb, swatchLab, oklab, distanceSquared, colorIndex, closestColor } from './perceptual-color.js';
+
+// A screen-space allowance in Oklab units. Physical print accuracy depends on the spools.
+const MATCH_TOLERANCE = 0.02;
+export function mapImage(data, palette, limit = 0, opacityPercent = 0, options = {}) {
   const minAlpha = Math.max(1, Math.ceil((255 * opacityPercent) / 100));
   const histogram = new Map(),
-    colors = palette.map(rgb),
+    colors = palette.map(swatchLab),
     added = [];
   let hasInk = false;
   for (let i = 0; i < data.length; i += 4) {
     const alpha = data[i + 3];
     if (alpha === 0) continue;
     hasInk = true;
-    if (alpha < minAlpha) continue;
+    if (!limit || alpha < minAlpha) continue;
     const key = ((data[i] >> 3) << 10) | ((data[i + 1] >> 3) << 5) | (data[i + 2] >> 3);
     let bin = histogram.get(key);
     if (!bin) {
@@ -35,37 +23,70 @@ export function mapImage(data, palette, limit = 0, opacityPercent = 0) {
     bin[3]++;
   }
   if (!hasInk) throw Error('The image is fully transparent.');
-  const bins = [...histogram.values()].map((b) => ({
-    rgb: b.slice(0, 3).map((v) => Math.round(v / b[3])),
-    weight: b[3],
-  }));
-  for (let i = 0; i < Math.min(limit, 16 - palette.length); i++) {
-    let score = 0,
-      pick = null;
-    for (const b of bins) {
-      const d = nearest(b.rgb, colors)[1];
-      if (d > 9 && d * b.weight > score) {
-        score = d * b.weight;
-        pick = b.rgb;
-      }
+  const entries = colors.map((lab, slot) => ({ lab, slot }));
+  const solids = colorIndex(entries.filter(e => !options.mixes?.[e.slot]));
+  const savedMixes = colorIndex(entries.filter(e => options.mixes?.[e.slot]));
+  const candidates = options.candidates;
+  const candidateTree = colorIndex((candidates ?? []).map(({ hex }, slot) => ({ lab: swatchLab(hex), slot })));
+  const recipes = [];
+  const bins = [...histogram.values()].map(bin => {
+    const channels = bin.slice(0, 3).map(sum => Math.round(sum / bin[3]));
+    const lab = oklab(...channels);
+    const hex = '#' + channels.map(c => c.toString(16).padStart(2, '0')).join('').toUpperCase();
+    const match = candidates ? closestColor(lab, candidateTree) : { error: 0 };
+    const error = Math.min(closestColor(lab, solids).error, closestColor(lab, savedMixes).error);
+    return { lab, weight: bin[3], hex: candidates ? candidates[match.slot]?.hex : hex,
+      recipe: candidates?.[match.slot]?.parts, targetError: match.error, error };
+  });
+  for (let i = 0; i < Math.min(limit, options.capacity ?? 16 - palette.length); i++) {
+    // Combine the improvement for image regions that want the same new swatch.
+    const gains = new Map();
+    let best, bestGain = 0;
+    for (const bin of bins) {
+      const gain = bin.error - bin.targetError;
+      if (!bin.hex || gain <= MATCH_TOLERANCE) continue;
+      const total = (gains.get(bin.hex) ?? 0) + gain * bin.weight;
+      gains.set(bin.hex, total);
+      if (total > bestGain) { best = bin; bestGain = total; }
     }
-    if (!pick) break;
-    colors.push(pick);
-    added.push(
-      '#' +
-        pick
-          .map((v) => v.toString(16).padStart(2, '0'))
-          .join('')
-          .toUpperCase()
-    );
+    if (!best) break;
+    const lab = swatchLab(best.hex);
+    added.push(best.hex);
+    colors.push(lab);
+    if (candidates) recipes.push(best.recipe);
+    for (const bin of bins) bin.error = Math.min(bin.error, Math.sqrt(distanceSquared(bin.lab, lab)));
   }
-  const pixels = new Uint8Array(data.length / 4);
+  const newColors = colorIndex(colors.slice(palette.length).map((lab, i) => ({ lab, slot: palette.length + i })));
+  const pixels = new Uint8Array(data.length / 4).fill(255);
+  const cache = new Map();
+  const used = new Set();
   for (let i = 0; i < pixels.length; i++) {
     const k = i * 4;
-    pixels[i] =
-      data[k + 3] >= minAlpha ? nearest([data[k], data[k + 1], data[k + 2]], colors)[0] : 255;
+    if (data[k + 3] < minAlpha) continue;
+    const r = data[k], g = data[k + 1], b = data[k + 2];
+    const key = (r << 16) | (g << 8) | b;
+    let slot = cache.get(key);
+    if (slot === undefined) {
+      const lab = oklab(r, g, b);
+      const solid = closestColor(lab, solids), mix = closestColor(lab, savedMixes), fresh = closestColor(lab, newColors);
+      const cutoff = Math.min(solid.error, mix.error, fresh.error) + MATCH_TOLERANCE;
+      slot = solid.error <= cutoff ? solid.slot : mix.error <= cutoff ? mix.slot : fresh.slot;
+      cache.set(key, slot);
+    }
+    pixels[i] = slot;
+    used.add(slot);
   }
-  return { pixels, added };
+  // The final pixel pass uses exact colors. A histogram candidate can be
+  // superseded by a later addition or lose a close match to an existing spool.
+  const keep = added.map((_, i) => used.has(palette.length + i));
+  if (keep.includes(false)) {
+    let next = palette.length;
+    const indices = keep.map(retain => retain ? next++ : 255);
+    for (let i = 0; i < pixels.length; i++)
+      if (pixels[i] !== 255 && pixels[i] >= palette.length) pixels[i] = indices[pixels[i] - palette.length];
+  }
+  return { pixels, added: added.filter((_, i) => keep[i]),
+    ...(candidates && { recipes: recipes.filter((_, i) => keep[i]) }) };
 }
 export function stampCanvas(stamp, palette, showRemoved = false) {
   const canvas = document.createElement('canvas');

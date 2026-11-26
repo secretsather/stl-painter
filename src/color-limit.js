@@ -37,7 +37,7 @@ export function setupColorLimit(model) {
     const heights = positions !== sentPositions ? cellHeights(positions) : null;
     sentPositions = positions;
     worker.postMessage(
-      { paint, limit, heights },
+      { paint, limit, heights, masks: active.masks },
       heights ? [paint.buffer, heights.buffer] : [paint.buffer]
     );
   }
@@ -66,7 +66,7 @@ export function setupColorLimit(model) {
   function refresh() {
     const limit = Number(control.value);
     report.hidden = !limit;
-    const { paint, palette, positions, bottom } = model();
+    const { paint, palette, positions, bottom, masks } = model();
     if (!limit || palette.length <= limit) {
       stop();
       show(limit ? 'Within the selected color limit.' : '');
@@ -82,7 +82,7 @@ export function setupColorLimit(model) {
     }
     // Snapshot committed paint. If more edits arrive during a check, run
     // only the newest one next and discard the superseded result.
-    pending = { limit, positions, bottom, paint: paint.slice(), palette: palette.slice() };
+    pending = { limit, positions, bottom, masks, paint: paint.slice(), palette: palette.slice() };
     show('Checking slice colors…', 'checking…');
     sendNext();
   }
