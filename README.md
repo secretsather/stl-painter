@@ -43,7 +43,7 @@ Drag to paint the visible surface. Set **Diameter** in pixels or millimeters.
 <details>
 <summary>See Brush in action</summary>
 
-![A brush paints a curved teal stroke across a cream fluted vessel.](docs/demos/brush.gif)
+![A curved cream brushstroke is painted along Juniper’s orange tail.](docs/demos/juniper-brush.gif)
 
 </details>
 
@@ -54,7 +54,7 @@ Hover over a face to see which area will change. Click to fill the highlighted r
 <details>
 <summary>See Fill in action</summary>
 
-![Hovering highlights a connected region below a stripe. A click fills that region with teal.](docs/demos/fill.gif)
+![Fill previews a teal panel on Juniper’s jacket. A click fills it with cream.](docs/demos/juniper-fill.gif)
 
 </details>
 
@@ -67,7 +67,7 @@ Turn on **Include thin seams** to scan for narrow strips by their width. If the 
 <details>
 <summary>See Fill Gaps in action</summary>
 
-![Three cream pinholes appear on a teal surface. The scan outlines them and Apply fills them with the surrounding teal.](docs/demos/fill-gaps.gif)
+![Fill Gaps finds three dark flecks on Juniper’s tail. Apply fills them with the surrounding orange.](docs/demos/juniper-fill-gaps.gif)
 
 </details>
 
@@ -78,7 +78,7 @@ Press **H** and choose **Bottom to top (Z)**, **Left to right (X)**, or **Front 
 <details>
 <summary>See Fill Band in action</summary>
 
-![Two clicks set the bounds of a horizontal band. The preview wraps around the vessel and Apply paints the band.](docs/demos/fill-band.gif)
+![Two clicks set the bounds of an orange band around Juniper’s waist. Apply paints the band.](docs/demos/juniper-fill-band.gif)
 
 </details>
 
@@ -89,7 +89,7 @@ Press **L** and position the view. Click on the model or background to place the
 <details>
 <summary>See Fill Lasso in action</summary>
 
-![Clicks place nodes along a curved outline. Backspace removes a node, and closing and applying the loop paints the enclosed surface.](docs/demos/fill-lasso.gif)
+![Lasso nodes trace a chevron on Juniper’s tail. Backspace removes a node before the loop is closed and filled with cream.](docs/demos/juniper-fill-lasso.gif)
 
 </details>
 
@@ -100,7 +100,7 @@ Select **Import artwork** for a PNG, JPEG, WebP, or BMP. Choose existing palette
 <details>
 <summary>See Stamps in action</summary>
 
-![A flower from the stamp library is positioned on the vessel and applied to its curved surface.](docs/demos/stamps.gif)
+![A cream star from the stamp library is positioned on Juniper’s tail and applied.](docs/demos/juniper-stamps.gif)
 
 </details>
 
@@ -111,7 +111,7 @@ Type a label, choose an installed font and palette color, and set size, bold, it
 <details>
 <summary>See Text in action</summary>
 
-![Typing CLAY previews lettering on the vessel. The lettering is dragged into position and applied.](docs/demos/text.gif)
+![Juniper turns to show the back of the flight jacket, where the word AIR is positioned and applied in cream.](docs/demos/juniper-text.gif)
 
 </details>
 
@@ -122,7 +122,7 @@ Drag to restore the base color. Brush and Eraser share the **Refine stroke edges
 <details>
 <summary>See Eraser in action</summary>
 
-![Dragging the eraser through teal paint exposes a curved stripe of the cream base color.](docs/demos/eraser.gif)
+![The eraser removes a dark mark from the cream tip of Juniper’s tail.](docs/demos/juniper-eraser.gif)
 
 </details>
 
