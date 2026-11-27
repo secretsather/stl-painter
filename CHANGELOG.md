@@ -1,5 +1,10 @@
 # What's new in STL Painter
 
+## What's new in 1.0.14
+
+- **Fill Gaps can follow a two-color boundary.** Enable **Include thin seams** to fill a narrow strip of a third color between two solids or saved mixes. Each triangle takes the color of the nearer side, measured along the model surface.
+- **Jagged seams and pointed tips fill more reliably.** The scan can now pick up isolated triangular slivers and follow a narrow strip where one painted edge zigzags. The preview shows where the colors will meet before you apply the edit.
+
 ## What's new in 1.0.13
 
 [Watch the eight painting tool demos in the README](README.md#painting-tools).

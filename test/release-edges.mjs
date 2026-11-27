@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { _electron } from 'playwright';
-import { fixture, gapGrid } from './fixture.mjs';
+import { fixture, gapGrid, gapWedge } from './fixture.mjs';
 import { readProject, writeProject } from '../src/files.js';
 import { makeSurface, readSTL } from '../src/mesh.js';
 import { mixHex } from '../src/mixes.js';
@@ -312,7 +312,9 @@ test('Fill Gaps previews the entire model and commits precisely the displayed re
 });
 
 test('Fill Gaps previews and applies the rendered neighbor color for solids and distinct mixes', async t => {
-  const { page, click, projectFile } = await desktop(t);
+  const { app, page, click, projectFile } = await desktop(t);
+  // Physical mouse motion carries the OS modifier state, independent of Playwright's Alt key.
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setIgnoreMouseEvents(true));
   const project = gapGrid(96, 54); // More than one render chunk.
   project.mixes = { 4: [{ slot: 0, percent: 50 }, { slot: 1, percent: 50 }],
     5: [{ slot: 2, percent: 50 }, { slot: 3, percent: 50 }] };
@@ -380,6 +382,33 @@ test('Fill Gaps previews and applies the rendered neighbor color for solids and 
   await click('undo');
   const undone = await samples();
   assert.ok(undone.every((image, i) => image.equals(original[i])));
+});
+
+test('Fill Gaps previews an 11.5 mm wedge, applies every gray face and undoes it in one step', async t => {
+  const { app, page, click, projectFile } = await desktop(t);
+  const p = gapWedge();
+  await fs.writeFile(projectFile, writeProject(p));
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setIgnoreMouseEvents(true));
+  await click('open');
+  await page.locator('#faces').filter({hasText: '288 source triangles'}).waitFor();
+  await page.locator('[data-tool="Fill Gaps"]').click();
+  const status = page.locator('#gap-count');
+  await page.locator('#gap-width').fill('11.49');
+  await status.filter({hasText: '0 gaps to fill'}).waitFor();
+  await page.locator('#gap-width').fill('11.5');
+  await status.filter({hasText: '1 gap to fill'}).waitFor();
+  await page.locator('#gap-seams').check();
+  await status.filter({hasText: '1 gap to fill'}).waitFor();
+  await click('save');
+  assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, p.paint);
+  assert.ok(await page.locator('#undo').isDisabled());
+  await click('apply-gaps');
+  await click('save');
+  assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, new Uint8Array(p.paint.length));
+  await click('undo');
+  await click('save');
+  assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, p.paint);
+  assert.ok(await page.locator('#undo').isDisabled());
 });
 
 test('Fill Gaps skips geometry preparation on a single-swatch model', async t => {
@@ -479,6 +508,51 @@ test('changing seam settings can finish a new preview while the previous scan is
   await page.waitForFunction(() => window.heldScan);
   await page.keyboard.press('Escape');
   assert.ok(await spinner.evaluate(el => el.hidden), 'cancel stops the indicator');
+});
+
+test('Include thin seams previews two bank colors and applies them together in one Undo', async t => {
+  const { app, page, click, projectFile } = await desktop(t);
+  const p = gapGrid(24, 14, 0.2);
+  for (let i = 0; i < p.vertices.length; i += 3) p.vertices[i] *= 8;
+  p.mixes = {4:[{slot:0, percent:50}, {slot:1, percent:50}]};
+  p.palette.push(mixHex(p.palette, p.mixes[4]));
+  const start = 2*(6*24+4), end = 2*(6*24+20);
+  p.paint.fill(4, 2*24*7);
+  const fleck = 2*(6*24+1)+1;
+  p.paint[fleck] = 2;
+  p.paint.fill(2, start, end+1);
+  const expected = p.paint.slice();
+  expected[fleck] = expected[end] = 0;
+  for (let id = start; id < end; id++) expected[id] = id % 2 ? 4 : 0;
+  await fs.writeFile(projectFile, writeProject(p));
+  await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].setIgnoreMouseEvents(true));
+  await page.locator('#open').evaluate(el => el.click());
+  await page.locator('#faces').filter({hasText:'672 source triangles'}).waitFor();
+  await page.locator('#busy').waitFor({state:'hidden'});
+  await page.locator('[data-tool="Fill Gaps"]').click();
+  const status = page.locator('#gap-count');
+  await status.filter({hasText:'0 gaps to fill'}).waitFor();
+  await page.evaluate(() => {
+    const send = Worker.prototype.postMessage;
+    Worker.prototype.postMessage = function(message, ...args) {
+      if (message.includeSeams) this.addEventListener('message', ({data}) => {
+        if (data.id === message.id && data.value?.targets) window.seamPreview = Array.from(data.value.targets);
+      });
+      return send.call(this, message, ...args);
+    };
+  });
+  await page.getByLabel('Include thin seams').check();
+  await status.filter({hasText:'2 gaps to fill'}).waitFor();
+  const preview = await page.evaluate(() => window.seamPreview);
+  assert.deepEqual(preview, Array.from(expected, (slot, i) => slot === p.paint[i] ? 255 : slot));
+  assert.ok(await page.locator('#undo').isDisabled());
+  await click('apply-gaps');
+  await click('save');
+  assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, expected);
+  await click('undo');
+  await click('save');
+  assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, p.paint);
+  assert.ok(await page.locator('#undo').isDisabled());
 });
 
 test('Include thin seams is opt-in, recomputes the preview and applies in one undoable edit', async t => {
@@ -1468,7 +1542,8 @@ test('a discarded zero-area STL facet does not enlarge the usable model bounds',
 });
 
 test('Fill hover and click agree across a painted bevel as angle and protection change', async t => {
-  const { page, click, projectFile } = await desktop(t);
+  const { app, page, click, projectFile } = await desktop(t);
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setIgnoreMouseEvents(true));
   const model = readSTL(fixture(), 'Bevel.stl');
   model.depth.fill(0);
   model.paint = new Uint8Array(model.depth.length);

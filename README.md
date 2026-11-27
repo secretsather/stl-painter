@@ -2,7 +2,7 @@
 
 STL Painter is an offline Windows desktop app for preparing multicolor 3D prints. Open an STL, paint the surface, add a logo or lettering, and export a color-painted 3MF for your slicer. Save a painter project if you want to come back and edit it later.
 
-**[Download STL Painter 1.0.13 for Windows (64-bit portable ZIP)](https://github.com/secretsather/stl-painter/releases/download/v1.0.13/STL-Painter-1.0.13-Windows-x64.zip)**
+**[Download STL Painter 1.0.14 for Windows (64-bit portable ZIP)](https://github.com/secretsather/stl-painter/releases/download/v1.0.14%2Bgaps.9/STL-Painter-1.0.14%2Bgaps.9-Windows-x64.zip)**
 
 [What's new in STL Painter](CHANGELOG.md)
 
@@ -60,7 +60,9 @@ Hover over a face to see which area will change. Click to fill the highlighted r
 
 ### Fill Gaps
 
-Press **G** to preview pinholes. **Maximum gap size** (default **0.5 mm**) measures the widest span of a patch enclosed by one swatch. Turn on **Include thin seams** to also fill narrow strips with the same solid color or saved mix on both sides. For seams, the threshold measures across the connected surface, and wider sections stay intact. Locked paint and open edges are skipped. Click **Apply** to commit the preview in one undoable edit, or press **Esc** to cancel.
+Press **G** to preview pinholes. **Maximum gap size** defaults to **0.5 mm** and measures the widest span of a patch enclosed by one swatch.
+
+Turn on **Include thin seams** to scan for narrow strips by their width. If the same swatch borders both sides, it fills the strip. If two different swatches enclose a strip of a third color, each seam triangle takes the nearer side’s color. This works with solids and saved mixes, including along jagged edges and pointed tips. Wider sections, locked paint, and open mesh edges are skipped. The preview shows where the colors will meet. Click **Apply** to commit the preview in one undoable edit, or press **Esc** to cancel.
 
 <details>
 <summary>See Fill Gaps in action</summary>

@@ -129,11 +129,21 @@ function edgeSpans(graph, positions, half, cache) {
   return safe;
 }
 
+function everyNeighbor(graph, cell, matches) {
+  for (let h = cell * 3; h < cell * 3 + 3; h++) {
+    if (!matches(graph.links[h])) return false;
+    const extra = graph.extra.get(h);
+    if (extra && !extra.every(matches)) return false;
+  }
+  return true;
+}
+
 // Sweep perpendicular cross-sections inward from each painted border. In the
 // unfolded plane the starting edge sits at y=0, so y measures surface width.
 // An interval of rays covers small refined cells between coarse edge endpoints.
 function addThinSeams(paint, locked, graph, positions, limit, targets, candidates, queue, patches, onProgress) {
   const proposals = new Uint8Array(paint.length).fill(255), ambiguous = new Set(), spans = new Map();
+  let nearest, distances;
   const active = new Uint8Array(paint.length);
   const stack = [], spare = [];
   // Nearby sweeps often cross the same directed edge. Its local coordinates
@@ -154,14 +164,33 @@ function addThinSeams(paint, locked, graph, positions, limit, targets, candidate
     node.cell = cell; node.lo = lo; node.hi = hi; node.parent = parent;
     stack.push(node);
   }
-  function propose(node, lo, hi, target) {
+  function offerBank(cell, slot, distance) {
+    if (!nearest) {
+      nearest = new Uint8Array(paint.length).fill(255);
+      distances = new Float64Array(paint.length);
+    }
+    const delta = distance - distances[cell];
+    const tie = Math.max(1, distance, distances[cell]) * 1e-8;
+    if (nearest[cell] === 255 || delta < -tie || (Math.abs(delta) <= tie && slot < nearest[cell])) {
+      nearest[cell] = slot;
+      distances[cell] = distance;
+    }
+  }
+  function propose(node, lo, hi, target, farBank) {
     for (let step = node; step; step = step.parent) {
       const { cell, center } = step;
       if (center < lo || center > hi || targets[cell] !== 255) continue;
       // Apply recolors whole leaves. A ray grazing a corner must not pull a
       // large triangle from the wide part of the patch into the result.
       if (step.triangle.some(p => p[1] < -limit * 1e-7 || p[1] > limit)) continue;
-      if (proposals[cell] !== 255 && proposals[cell] !== target) ambiguous.add(cell);
+      if (farBank) {
+        const y = (step.triangle[0][1] + step.triangle[1][1] + step.triangle[2][1]) / 3;
+        offerBank(cell, target, Math.abs(y));
+        // Unfolded distances from the centroid to the actual opposing edge span.
+        const {x0, y0, dx, dy, length2, slot} = farBank;
+        const t = Math.max(0, Math.min(1, ((center-x0)*dx + (y-y0)*dy)/length2));
+        offerBank(cell, slot, Math.hypot(center-x0-t*dx, y-y0-t*dy));
+      } else if (proposals[cell] !== 255 && proposals[cell] !== target) ambiguous.add(cell);
       else proposals[cell] = target;
     }
   }
@@ -199,12 +228,20 @@ function addThinSeams(paint, locked, graph, positions, limit, targets, candidate
             else left = Math.max(left, atLimit);
           }
           if (right <= left) continue;
-          if (paint[next] === target) {
-            // Require an opposing bank (within 45 degrees of parallel).
-            // A perpendicular end cap alone doesn't establish a seam.
-            if (patches[next] !== PINHOLE && Math.abs(dx) >= Math.abs(dy)) propose(node, left, right, target);
-          } else if (paint[next] === paint[seed]) {
+          if (paint[next] === paint[seed]) {
             pushCell(next, h, left, right, node);
+          } else if (patches[next] !== PINHOLE) {
+            if (paint[next] === target) {
+              // A short return to the same color can just be a corner.
+              if (Math.abs(dx) >= Math.abs(dy)) propose(node, left, right, target);
+            } else if (patches[seed] === TWO_BANKS) {
+              // A jagged opposite bank can be steep even when the whole strip
+              // fits the width. supportedSeam checks sustained contact with both banks.
+              const y0 = a[1] + (part ? part[0]*dy : 0);
+              const spanDy = part ? (part[1]-part[0])*dy : dy, spanDx = x1-x0;
+              propose(node, left, right, target, {x0, y0, dx:spanDx, dy:spanDy,
+                length2:spanDx*spanDx + spanDy*spanDy, slot:paint[next]});
+            }
           }
         }
       }
@@ -227,30 +264,43 @@ function addThinSeams(paint, locked, graph, positions, limit, targets, candidate
   for (let id = 0; id < paint.length; id++) {
     const target = proposals[id];
     if (target === 255) continue;
-    const unsafe = n => n < 0 || (paint[n] !== paint[id] && paint[n] !== target);
-    for (let h = id * 3; h < id * 3 + 3; h++) {
-      if (ambiguous.has(id) || unsafe(graph.links[h]) || graph.extra.get(h)?.some(unsafe)) {
-        proposals[id] = 255;
-        break;
-      }
+    const safe = n => n >= 0 && (paint[n] === paint[id] || paint[n] === target);
+    if (ambiguous.has(id) || !everyNeighbor(graph, id, safe)) {
+      proposals[id] = 255;
+    } else if (patches[id] === TWO_BANKS && nearest && nearest[id] === 255 &&
+        everyNeighbor(graph, id, n => paint[n] !== paint[id] || nearest[n] !== 255)) {
+      // A pointed end can meet the same bank on both long sides. Keep its
+      // measured color with the strip when all adjoining seam cells qualified.
+      nearest[id] = target;
     }
   }
+  if (nearest) {
+    collectSeams(nearest, true, paint, graph, positions, targets, queue, candidates, patches, spans);
+    for (let id = 0; id < proposals.length; id++) if (targets[id] !== 255) proposals[id] = 255;
+  }
+  collectSeams(proposals, false, paint, graph, positions, targets, queue, candidates, patches, spans);
+}
+
+function collectSeams(proposals, twoBanks, paint, graph, positions, targets, queue, candidates, patches, spans) {
   for (let seed = 0; seed < proposals.length; seed++) {
     const target = proposals[seed];
     if (target === 255 || targets[seed] !== 255) continue;
     // Whole-triangle and open-edge filtering can disconnect the middle of
     // a sweep from both borders. Grow only from surviving bank contact.
-    const isBank = n => n >= 0 && paint[n] === target && patches[n] !== PINHOLE;
-    let touchesBank = false;
-    for (let h = seed * 3; !touchesBank && h < seed * 3 + 3; h++)
-      touchesBank = isBank(graph.links[h]) || graph.extra.get(h)?.some(isBank);
-    if (!touchesBank) continue;
+    if (!twoBanks) {
+      const isBank = n => n >= 0 && paint[n] === target && patches[n] !== PINHOLE;
+      let touchesBank = false;
+      for (let h = seed * 3; !touchesBank && h < seed * 3 + 3; h++)
+        touchesBank = isBank(graph.links[h]) || graph.extra.get(h)?.some(isBank);
+      if (!touchesBank) continue;
+    }
     let size = 1;
     queue[0] = seed;
     targets[seed] = target;
     function visit(n) {
-      if (n < 0 || proposals[n] !== target || paint[n] !== paint[seed] || targets[n] !== 255) return;
-      targets[n] = target;
+      if (n < 0 || proposals[n] === 255 || (!twoBanks && proposals[n] !== target) ||
+          paint[n] !== paint[seed] || targets[n] !== 255) return;
+      targets[n] = proposals[n];
       queue[size++] = n;
     }
     for (let i = 0; i < size; i++) {
@@ -259,9 +309,10 @@ function addThinSeams(paint, locked, graph, positions, limit, targets, candidate
         graph.extra.get(h)?.forEach(visit);
       }
     }
-    // A lone edge triangle can only supply adjoining sides. Enclosed
-    // single-triangle pinholes have already been handled in the first pass.
-    if (size > 1 && supportedSeam(queue, size, proposals, paint, target, graph, positions, spans)) {
+    // An entire third-color fleck can be one sliver with two long bank edges.
+    // A single suggested face cut out of a larger patch is still just a notch.
+    const isolatedFleck = size === 1 && twoBanks && everyNeighbor(graph, seed, n => n >= 0 && paint[n] !== paint[seed]);
+    if ((size > 1 || isolatedFleck) && supportedSeam(queue, size, proposals, paint, target, graph, positions, spans, twoBanks)) {
       candidates.push(queue.slice(0, size));
     } else {
       for (let i = 0; i < size; i++) {
@@ -275,13 +326,21 @@ function addThinSeams(paint, locked, graph, positions, limit, targets, candidate
 // A square notch in a straight paint boundary has three sides against the
 // target and one side open to its original color. Require stronger support
 // than that for a seam. Measure shared lengths, not numbers of triangles.
-function supportedSeam(cells, size, proposals, paint, target, graph, positions, spans) {
-  let bank = 0, opening = 0;
+function supportedSeam(cells, size, proposals, paint, target, graph, positions, spans, twoBanks) {
+  let bank = 0, opening = 0, area = 0;
+  const contacts = twoBanks ? new Map() : null;
   for (let i = 0; i < size; i++) {
     const id = cells[i];
+    if (twoBanks) {
+      const k = 9*id;
+      const ax = positions[k+3]-positions[k], ay = positions[k+4]-positions[k+1], az = positions[k+5]-positions[k+2];
+      const bx = positions[k+6]-positions[k], by = positions[k+7]-positions[k+1], bz = positions[k+8]-positions[k+2];
+      area += 0.5*Math.hypot(ay*bz-az*by, az*bx-ax*bz, ax*by-ay*bx);
+    }
     for (let h = 3 * id; h < 3 * id + 3; h++) {
       const other = graph.links[h];
-      if (!graph.extra.has(h) && other >= 0 && paint[other] === paint[id] && proposals[other] === target) continue;
+      if (!graph.extra.has(h) && other >= 0 && paint[other] === paint[id] &&
+          (twoBanks ? proposals[other] !== 255 : proposals[other] === target)) continue;
       const a = h * 3, b = 9 * id + 3 * ((h + 1) % 3);
       const length = Math.hypot(positions[a] - positions[b], positions[a + 1] - positions[b + 1],
         positions[a + 2] - positions[b + 2]);
@@ -290,13 +349,19 @@ function supportedSeam(cells, size, proposals, paint, target, graph, positions, 
       let openFraction = 1;
       for (const [lo, hi, next] of segments) {
         if (next < 0) continue;
-        if (paint[next] === target) bank += (hi - lo) * length;
-        else if (paint[next] !== paint[id] || proposals[next] !== target) continue;
+        if (paint[next] === target || (twoBanks && paint[next] !== paint[id])) {
+          const contact = (hi-lo)*length;
+          bank += contact;
+          if (contacts) contacts.set(paint[next], (contacts.get(paint[next]) ?? 0) + contact);
+        } else if (paint[next] !== paint[id] || (twoBanks ? proposals[next] === 255 : proposals[next] !== target)) continue;
         openFraction -= hi - lo;
       }
       opening += Math.max(0, openFraction) * length;
     }
   }
+  // Each bank must run alongside the strip. A short contact on a speck or
+  // an end cap cannot establish a long, narrow seam between different colors.
+  if (contacts && (contacts.size !== 2 || Math.min(...contacts.values())**2 <= 3*area)) return false;
   return bank > 3 * opening * (1 + 1e-6);
 }
 
@@ -307,6 +372,7 @@ export function hasMultipleSwatches(paint) {
 }
 
 const PINHOLE = 2; // Visited paint patch small enough to be a pinhole, even if locked.
+const TWO_BANKS = 3; // Third-color patch bounded by exactly two swatches and no open mesh edges.
 
 export function findGaps(paint, locked, graph, positions, threshold, includeSeams = false, onProgress) {
   const targets = new Uint8Array(paint.length).fill(255);
@@ -317,15 +383,19 @@ export function findGaps(paint, locked, graph, positions, threshold, includeSeam
   for (let seed = 0; seed < paint.length; seed++) {
     const color = paint[seed];
     if (visited[seed] || (!includeSeams && locked.has(color))) continue;
-    let size = 1, border = -1, possible = true;
+    let size = 1, border = -1, second = -1, possible = true, enclosed = true;
     const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
     cells[0] = seed;
     visited[seed] = 1;
     function visit(id, parentEdge) {
-      if (id < 0) possible = false; // Open mesh boundary.
+      if (id < 0) enclosed = possible = false; // Open mesh boundary.
       else if (paint[id] !== color) {
-        if (border >= 0 && border !== paint[id]) possible = false;
-        border = paint[id];
+        if (border < 0) border = paint[id];
+        else if (border !== paint[id]) {
+          possible = false;
+          if (second < 0) second = paint[id];
+          else if (second !== paint[id]) enclosed = false;
+        }
       } else if (!visited[id]) {
         visited[id] = 1;
         cells[size] = id;
@@ -349,6 +419,9 @@ export function findGaps(paint, locked, graph, positions, threshold, includeSeam
           if (max[axis] - min[axis] > limit) possible = false;
         }
       }
+    }
+    if (includeSeams && enclosed && second >= 0 && !locked.has(color)) {
+      for (let i = 0; i < size; i++) visited[cells[i]] = TWO_BANKS;
     }
     if (!possible || border < 0 || !fitsSurface(positions, cells, parents, size, limit)) continue;
     if (includeSeams) for (let i = 0; i < size; i++) visited[cells[i]] = PINHOLE;

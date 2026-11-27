@@ -11,6 +11,24 @@ export function gapGrid(width = 12, height = 6, spacing = 0.1) {
     palette: ['#F0DDAA', '#772233', '#227755', '#224488'], stamps: [] };
 }
 
+// The gray right triangle has 6.9 and 9.2 mm legs and an 11.5 mm hypotenuse.
+export function gapWedge() {
+  const p = gapGrid(12, 12, 1);
+  p.palette[1] = '#777777';
+  for (let i = 0; i < p.vertices.length; i += 3) {
+    p.vertices[i] = (p.vertices[i] - 4) * 1.725;
+    p.vertices[i + 1] = (p.vertices[i + 1] - 4) * 2.3;
+  }
+  for (let y = 0; y < 4; y++) {
+    for (let x = 0; x + y < 4; x++) {
+      const face = 2 * (12 * (4 + y) + 4 + x);
+      p.paint[face] = 1;
+      if (x + y < 3) p.paint[face + 1] = 1;
+    }
+  }
+  return p;
+}
+
 // A closed beveled slab, plus a disconnected block. Z is up and coordinates are mm.
 export function fixture() {
   const triangles = [];
