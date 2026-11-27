@@ -32,7 +32,7 @@ import { RefinedStroke } from './refined-stroke.js';
 import { applyLeafEdits, mergeRepaintedCells } from './paint-tree.js';
 import { bandEdits } from './band.js';
 import { lassoFootprint, lassoSegments } from './lasso.js';
-import { sampleProject, binarySTLFaceCount, checkFaceLimit, LARGE_MODEL_FACES, MAX_CELLS } from './mesh.js';
+import { binarySTLFaceCount, checkFaceLimit, LARGE_MODEL_FACES, MAX_CELLS } from './mesh.js';
 import { FillPreview, drawFillPreview, drawSurfaceHighlight } from './fill-preview.js';
 import { hasMultipleSwatches } from './fill-gaps.js';
 import { modelJob, FillJobs } from './model-job.js';
@@ -1041,8 +1041,12 @@ function openModel(selectFile) {
     const { mesh, prepared } = await modelJob({ mesh: { vertices, faces: indices, depth, paint, splits, palette } },
       [...new Set(attributes.map(a => a.buffer))]);
     Object.assign(next, mesh);
-    load(next, project ? 'PAINTER PROJECT' : 'STL MODEL', project ? file.name : next.name, prepared);
-    await files.accept();
+    if (file.sample) {
+      load(next, 'SAMPLE MODEL', next.name, prepared);
+    } else {
+      load(next, project ? 'PAINTER PROJECT' : 'STL MODEL', project ? file.name : next.name, prepared);
+      await files.accept();
+    }
   });
 }
 $('open').onclick = () => openModel(files.open);
@@ -1936,7 +1940,7 @@ async function start() {
     schedulePreview();
   });
   await openModel(files.openLaunchFile);
-  if (!p) load(sampleProject(), 'SAMPLE MODEL');
+  if (!p) await openModel(files.openSample);
   bindCanvas();
 }
 start().catch((err) => {

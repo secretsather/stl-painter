@@ -114,6 +114,11 @@ app.whenReady().then(() => {
     if ((await fs.stat(file)).size > maxPaletteBytes) throw Error('The palette file is too large.');
     return { name: path.basename(file), text: await fs.readFile(file, 'utf8') };
   });
+  register('open-sample', async () => ({
+    name: 'juniper.stlp',
+    bytes: await readModelFile(path.join(__dirname, '../dist/juniper.stlp')),
+    sample: true,
+  }));
   register('open-launch-file', () => {
     const args = process.argv.slice(process.defaultApp ? 2 : 1);
     const file = args.find((arg) => !arg.startsWith('-') && /\.stlp?$/i.test(arg));

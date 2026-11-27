@@ -1,5 +1,10 @@
 # What's new in STL Painter
 
+## What's new in 1.0.15
+
+- **Meet Juniper, Sky Courier.** A fresh launch opens a fully painted, four-color fox aviator with goggles, a scarf, and a flight jacket. Try the painting tools on Juniper and save your own copy. Opening an existing project loads it directly.
+- The main README graphic now shows Juniper in the actual startup workspace.
+
 ## What's new in 1.0.14
 
 - **Fill Gaps can follow a two-color boundary.** Enable **Include thin seams** to fill a narrow strip of a third color between two solids or saved mixes. Each triangle takes the color of the nearer side, measured along the model surface.

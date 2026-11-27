@@ -2,11 +2,11 @@
 
 STL Painter is an offline Windows desktop app for preparing multicolor 3D prints. Open an STL, paint the surface, add a logo or lettering, and export a color-painted 3MF for your slicer. Save a painter project if you want to come back and edit it later.
 
-**[Download STL Painter 1.0.14 for Windows (64-bit portable ZIP)](https://github.com/secretsather/stl-painter/releases/download/v1.0.14%2Bgaps.9/STL-Painter-1.0.14%2Bgaps.9-Windows-x64.zip)**
+**[Download STL Painter 1.0.15 for Windows (64-bit portable ZIP)](https://github.com/secretsather/stl-painter/releases/download/v1.0.15/STL-Painter-1.0.15-Windows-x64.zip)**
 
 [What's new in STL Painter](CHANGELOG.md)
 
-![STL Painter showing the sample fluted vessel with an orange surface and cream stripe, the view cube, and the four-color palette](assets/stl-painter-workspace.png)
+![STL Painter showing Juniper, a painted orange fox aviator with goggles, a cream scarf, and a teal flight jacket, alongside the four-color palette](assets/stl-painter-workspace.png)
 
 ## Install on Windows
 
@@ -20,7 +20,7 @@ Keep your saved projects in a separate folder. To update a portable copy, extrac
 
 ## Paint your first model
 
-1. **Open a model.** Click **Open** and choose a binary or ASCII `.stl`, or try the sample vessel. The upper-left readout shows X, Y, and Z dimensions in millimeters.
+1. **Open a model.** Try painting Juniper, the four-color fox aviator, or click **Open** and choose a binary or ASCII `.stl`. The upper-left readout shows X, Y, and Z dimensions in millimeters.
 2. **Choose a color.** Click a palette row to paint with that color. Click its colored square to change the color itself. **Color 1** is the base exposed by the eraser.
 3. **Paint the surface.** Choose **Brush** and left-drag across the model. Right-drag to orbit, hold the mouse wheel and drag to pan, and scroll to zoom. Click a face of the view cube to work straight on.
 4. **Save your work.** Click **Save** to write a self-contained `.stlp` with the model, paint, palette, and stamp library. Use **Ctrl+Shift+S** to save a separate copy.
@@ -194,14 +194,11 @@ npx.cmd install-electron
 npm.cmd start
 ```
 
-### Test and package
+### Package for Windows
 
 | Command | Result |
 | --- | --- |
-| `npm.cmd test` | Runs the model, paint, and file-format tests. |
-| `npm.cmd run test:app` | Builds the app and exercises painting, undo, saving, reopening, and export in an offline desktop session. |
-| `npm.cmd run build` followed by `node --test test/release-edges.mjs` | Checks release regressions, including same-file saves, triangle limits, and stamp dragging. |
 | `npm.cmd run dist:portable` | Builds the Windows x64 portable ZIP in `release/`. |
 | `npm.cmd run dist` | Builds the Windows x64 installer in `release/`. |
 
-Set `PAINTER_EXE` to the path of an extracted or installed **STL Painter.exe** to run the desktop tests against that build. To test a slicer round-trip, set `SLICER_EXE` to a slicer executable that supports the `--export-3mf` option and painted 3MF files.
+The maintainers run the test suite locally before publishing a release.

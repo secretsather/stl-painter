@@ -3,6 +3,7 @@ contextBridge.exposeInMainWorld('painterFiles', {
   open: () => ipcRenderer.invoke('open'),
   openPalette: () => ipcRenderer.invoke('open-palette'),
   openLaunchFile: () => ipcRenderer.invoke('open-launch-file'),
+  openSample: () => ipcRenderer.invoke('open-sample'),
   readPendingProject: () => ipcRenderer.invoke('read-pending-project'),
   accept: () => ipcRenderer.invoke('accept'),
   dirty: (value) => ipcRenderer.invoke('dirty', value),

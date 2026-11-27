@@ -13,6 +13,7 @@ await Promise.all([
   copyFile('src/index.html', 'dist/index.html'),
   copyFile('src/style.css', 'dist/style.css'),
   copyFile('assets/icon.ico', 'dist/icon.ico'),
+  copyFile('assets/juniper.stlp', 'dist/juniper.stlp'),
 ]);
 const notices = [];
 for (const [name, file] of [
