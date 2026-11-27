@@ -46,6 +46,24 @@ export class Viewport {
       metalness: 0,
       side: T.DoubleSide,
     });
+    // Preview two model-space planes in the existing surface draw, so moving
+    // the pointer or orbiting never rebuilds the subdivision tree.
+    this.bandRange = { value: new T.Vector2(1, 0) };
+    this.bandAxis = { value: new T.Vector3(0, 0, 1) };
+    this.bandColor = { value: new T.Color() };
+    this.bandHasLocks = { value: false };
+    this.paintMaterial.defaultAttributeValues = { paintLocked: [0] };
+    this.paintMaterial.onBeforeCompile = shader => {
+      shader.uniforms.bandRange = this.bandRange;
+      shader.uniforms.bandAxis = this.bandAxis;
+      shader.uniforms.bandColor = this.bandColor;
+      shader.uniforms.bandHasLocks = this.bandHasLocks;
+      shader.vertexShader = 'attribute float paintLocked; uniform vec3 bandAxis; varying float locked; varying float bandPosition;\n' + shader.vertexShader.replace(
+        '#include <begin_vertex>', '#include <begin_vertex>\nbandPosition = dot(position, bandAxis); locked = paintLocked;');
+      shader.fragmentShader = 'varying float locked; varying float bandPosition; uniform bool bandHasLocks; uniform vec2 bandRange; uniform vec3 bandColor;\n' +
+        shader.fragmentShader.replace('#include <color_fragment>',
+          '#include <color_fragment>\nif (bandPosition >= bandRange.x && bandPosition <= bandRange.y && (!bandHasLocks || locked < 0.5)) diffuseColor.rgb = bandColor;');
+    };
     this.pickMaterial = new T.RawShaderMaterial({
       side: T.DoubleSide,
       glslVersion: T.GLSL3,
@@ -70,7 +88,9 @@ export class Viewport {
     this.camera = this.perspective;
     this.onView = onView;
     this.camera.up.set(0, 0, 1);
-    this.cube = new ViewCube(host.querySelector('#view-cube'), (name) => this.orient(name));
+    this.cube = new ViewCube(host.querySelector('#view-cube'), (name) => {
+      if (this.controls.enabled) this.orient(name);
+    });
     this.controls = new OrbitControls(this.camera, this.canvas);
     this.controls.enableDamping = false;
     this.controls.mouseButtons = { LEFT: null, MIDDLE: T.MOUSE.PAN, RIGHT: T.MOUSE.ROTATE };
@@ -131,7 +151,7 @@ export class Viewport {
       geometry.setAttribute('normal', new T.BufferAttribute(flatNormals, 3));
       geometry.setAttribute('color', colors);
       const mesh = new T.Mesh(geometry, this.paintMaterial), pick = new T.Mesh(geometry, this.pickMaterial);
-      const chunk = { version: ++this.chunkVersion, range, data, mesh, pick, colors, faceOffsets, dirtyStart: Infinity, dirtyEnd: -1 };
+      const chunk = { version: ++this.chunkVersion, range, data, mesh, pick, colors, colorBytes, faceOffsets, dirtyStart: Infinity, dirtyEnd: -1 };
       pick.onBeforeRender = () => {
         this.pickMaterial.uniforms.firstCell.value = chunk.range.cell;
         this.pickMaterial.uniformsNeedUpdate = true;
@@ -253,11 +273,35 @@ export class Viewport {
   updateColorLookup() {
     this.rgb = displayColors(this.project.palette);
   }
+  showBand(low, high, hex, revision, axis = 2) {
+    const { paint, lockedSlots } = this.project;
+    this.bandHasLocks.value = low <= high && lockedSlots.size > 0;
+    if (this.bandHasLocks.value) {
+      for (const chunk of this.chunks) {
+        if (chunk.lockRevision === revision) continue;
+        const { cell, endCell } = chunk.range, geometry = chunk.mesh.geometry;
+        let mask = geometry.getAttribute('paintLocked');
+        if (!mask) {
+          mask = new T.BufferAttribute(new Uint8Array((endCell - cell) * 3), 1);
+          geometry.setAttribute('paintLocked', mask);
+        }
+        for (let id = cell, k = 0; id < endCell; id++, k += 3) {
+          mask.array[k] = mask.array[k + 1] = mask.array[k + 2] = Number(lockedSlots.has(paint[id]));
+        }
+        mask.needsUpdate = true;
+        chunk.lockRevision = revision;
+      }
+    }
+    this.bandRange.value.set(low, high);
+    this.bandAxis.value.set(0, 0, 0).setComponent(axis, 1);
+    if (hex) this.bandColor.value.set(hex);
+    this.draw();
+  }
   refreshPalette() {
     this.updateColorLookup();
     for (const chunk of this.chunks) {
       const { cell, endCell } = chunk.range;
-      for (let id = cell; id < endCell; id++) writeColor(chunk.colors.array, id - cell, this.rgb[this.project.paint[id]]);
+      for (let id = cell; id < endCell; id++) writeColor(chunk.colorBytes, id - cell, this.rgb[this.project.paint[id]]);
       chunk.colors.clearUpdateRanges();
       chunk.colors.addUpdateRange(0, chunk.colors.array.length);
       chunk.colors.needsUpdate = true;
@@ -266,9 +310,33 @@ export class Viewport {
   }
   color(id, index) {
     const chunk = this.chunkFor(id), local = id - chunk.range.cell;
-    writeColor(chunk.colors.array, local, this.rgb[index]);
+    writeColor(chunk.colorBytes, local, this.rgb[index]);
     chunk.dirtyStart = Math.min(chunk.dirtyStart, local);
     chunk.dirtyEnd = Math.max(chunk.dirtyEnd, local);
+  }
+  showGapColors(targets) {
+    if (this.gapTargets === targets) return;
+    this.gapTargets = targets;
+    for (const chunk of this.chunks) {
+      const { cell, endCell } = chunk.range;
+      let bytes = chunk.colorBytes;
+      if (targets) {
+        for (let id = cell; id < endCell; id++) {
+          const slot = targets[id];
+          if (slot === 255) continue;
+          if (bytes === chunk.colorBytes) bytes = bytes.slice();
+          writeColor(bytes, id - cell, this.rgb[slot]);
+        }
+      }
+      if (chunk.colors.array === bytes) continue;
+      // Reuse the GPU buffer. Keep committed colors available for sampling,
+      // history and cancellation, including edits made during the preview.
+      chunk.colors.array = bytes;
+      chunk.colors.clearUpdateRanges();
+      chunk.colors.addUpdateRange(0, bytes.length);
+      chunk.colors.needsUpdate = true;
+    }
+    this.draw();
   }
   recolor() {
     for (const chunk of this.chunks) {
@@ -436,6 +504,43 @@ export class Viewport {
     const forward = ray.direction.dot(camera.getWorldDirection(this.samplePoint));
     return this.tree.raycastFirst(ray, T.DoubleSide, camera.near / forward, camera.far / forward);
   }
+  bandPositionAt(point, axis) {
+    const hit = this.surfaceHit(point), span = this.box.size[axis], base = this.box.min[axis];
+    let position = hit?.point.getComponent(axis);
+    if (!hit) {
+      // Project the positive model axis onto the canvas. Off-model clicks
+      // past the visible silhouette snap to the corresponding physical end.
+      const basis = this.camera.matrixWorld.elements;
+      const dx = basis[axis], dy = -basis[4 + axis], length = Math.hypot(dx, dy);
+      const endOn = length < 0.0142;
+      const ux = endOn ? 0 : dx / length, uy = endOn ? -1 : dy / length;
+      const cache = this.picks();
+      cache.bandExtents ??= [];
+      if (!cache.bandExtents[axis]) {
+        let min = Infinity, max = -Infinity;
+        for (let y = 0, i = 0; y < this.h; y++) {
+          for (let x = 0; x < this.w; x++, i++) {
+            if (cache.ids[i] < 0) continue;
+            const t = x * ux + y * uy;
+            min = Math.min(min, t);
+            max = Math.max(max, t);
+          }
+        }
+        cache.bandExtents[axis] = [min, max];
+      }
+      const [min, max] = cache.bandExtents[axis];
+      const t = Math.floor(point.x) * ux + Math.floor(point.y) * uy;
+      if (min <= max && t < min) return 0;
+      if (min <= max && t > max) return span;
+      if (endOn && max > min) return span * (t - min) / (max - min);
+      const forward = this.camera.getWorldDirection(this.samplePoint);
+      const ray = this.raycaster.ray;
+      const distance = this.center.clone().sub(ray.origin).dot(forward) / ray.direction.dot(forward);
+      position = ray.origin.getComponent(axis) + distance * ray.direction.getComponent(axis);
+    }
+    if (position >= this.box.max[axis]) return span;
+    return Math.max(0, Math.min(span, Number((position - base).toFixed(3))));
+  }
   pixelsPerMillimeter(point) {
     const { camera } = this;
     const scale = this.h * camera.projectionMatrix.elements[5] / 2;
@@ -585,7 +690,7 @@ export class Viewport {
       point.y = y + 0.5;
       for (let x = left; x < right; x++) {
         const id = ids[y * this.w + x];
-        if (id < 0 || result.has(id)) continue;
+        if (id < 0 || result.has(id) || this.project.lockedSlots?.has(this.project.paint[id])) continue;
         point.x = x + 0.5;
         const color = footprint.sample(point);
         if (color !== 255 && (!footprint.accepts || footprint.accepts(id))) result.set(id, color);
@@ -597,6 +702,7 @@ export class Viewport {
     const cells = this.visibleCells(),
       result = new Map();
     for (const id of cells.active) {
+      if (this.project.lockedSlots?.has(this.project.paint[id])) continue;
       const pixel = cells.best[id];
       const color = footprint.sample({
         x: (pixel % this.w) + 0.5,
@@ -606,5 +712,28 @@ export class Viewport {
       if (this.visibleAtCenter(id, cells)) result.set(id, color);
     }
     return result;
+  }
+  lassoCells(footprint) {
+    const {ids} = this.picks(), cells = this.visibleCells(), edits = new Map();
+    const add = (id, color) => {
+      const original = this.project.paint[id];
+      if (color !== original && !this.project.lockedSlots.has(original)) edits.set(id, color);
+    };
+    const point = { x: 0, y: 0 };
+    for (let y = footprint.ymin; y < footprint.ymax; y++) {
+      point.y = y + 0.5;
+      for (let x = footprint.xmin; x < footprint.xmax; x++) {
+        const pixel = y * this.w + x;
+        if (ids[pixel] < 0 && cells.head[pixel] < 0) continue;
+        point.x = x + 0.5;
+        const color = footprint.sample(point);
+        if (color === 255) continue;
+        if (ids[pixel] >= 0) add(ids[pixel], color);
+        for (let sub = cells.head[pixel]; sub !== -1; sub = cells.next[sub]) {
+          if (this.visibleAtCenter(sub, cells)) add(sub, color);
+        }
+      }
+    }
+    return edits;
   }
 }

@@ -151,6 +151,9 @@ test('fill crosses different subdivision depths, follows successive dihedral ang
   for (let k = 0; k < p.paint.length; k++) if (s.owners[k] === 3) p.paint[k] = 1;
   assert.deepEqual(reached(20), [0, 1, 2]);
   assert.deepEqual(reached(20, false), [0, 1, 2, 3, 4, 5]);
+  p.lockedSlots = new Set([1]);
+  assert.deepEqual(reached(20, false), [0, 1, 2], 'locked paint blocks Fill across subdivision boundaries');
+  assert.deepEqual(flood(p, s, p.paint.indexOf(1), 180, false), [], 'a locked seed starts no fill');
 });
 test('independent leaf ordering, filament slot compaction, extended colors and project integrity', () => {
   const p = readSTL(fixture(), 'bevel');

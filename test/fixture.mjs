@@ -1,3 +1,16 @@
+// A painted grid with explicit millimeter spacing and one paint cell per face.
+export function gapGrid(width = 12, height = 6, spacing = 0.1) {
+  const vertices = [], faces = [];
+  for (let y = 0; y <= height; y++) for (let x = 0; x <= width; x++) vertices.push(x * spacing, y * spacing, 0);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const a = y * (width + 1) + x, b = a + width + 1;
+    faces.push(a, a + 1, b, b, a + 1, b + 1);
+  }
+  return { name: 'Pinholes', vertices: Float32Array.from(vertices), faces: Uint32Array.from(faces),
+    depth: new Uint8Array(faces.length / 3), paint: new Uint8Array(faces.length / 3),
+    palette: ['#F0DDAA', '#772233', '#227755', '#224488'], stamps: [] };
+}
+
 // A closed beveled slab, plus a disconnected block. Z is up and coordinates are mm.
 export function fixture() {
   const triangles = [];

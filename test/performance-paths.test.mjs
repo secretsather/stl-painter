@@ -1,10 +1,30 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { adjacency, makeSurface } from '../src/mesh.js';
-import { applyLeafEdits } from '../src/paint-tree.js';
+import { applyLeafEdits, mergeRepaintedCells, surfaceRanges } from '../src/paint-tree.js';
 import { FillIndex } from '../src/fill-index.js';
 import { mapImage } from '../src/stamps.js';
 import { mixCandidates } from '../src/mixes.js';
+
+test('a commit can collapse nested siblings and grow another tree across chunk boundaries', () => {
+  const p = {depth: new Uint8Array(8200), paint: new Uint8Array(8203)};
+  p.depth[0] = 1; // Four base paint cells on the first triangle.
+  const nested = {side: 2, left: 3, right: {side: 1, left: 4, right: 3}};
+  const retained = {side: 3, left: 3, right: 3};
+  const first = applyLeafEdits(p, new Map([[0, nested], [1, retained]]));
+  const start = {...p, ...first}, last = start.paint.length - 1;
+  const edits = new Map([[last, {side: 3, left: 2, right: 1}], [1, 3]]);
+  const result = applyLeafEdits(start, edits, start.ranges);
+  const expected = applyLeafEdits({...p, paint: p.paint.with(0, 3)}, new Map([[1, retained],
+    [p.paint.length - 1, edits.get(last)]]));
+  assert.deepEqual(result.paint, expected.paint);
+  assert.deepEqual(result.splits, expected.splits);
+  assert.deepEqual(result.ranges, surfaceRanges({...p, ...result}));
+  assert.deepEqual([...result.changed], [0, 1]);
+  assert.equal(start.paint[1], 4);
+  // Unrelated uniform siblings survive, and unequal slots never merge.
+  assert.equal(mergeRepaintedCells(start, start.ranges, Uint32Array.of(last, 0)), null);
+});
 
 test('incremental sections preserve leaf order and neighbors across unequal and non-manifold seams', () => {
   const project = {

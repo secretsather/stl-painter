@@ -2,7 +2,9 @@
 
 STL Painter is an offline Windows desktop app for preparing multicolor 3D prints. Open an STL, paint the surface, add a logo or lettering, and export a color-painted 3MF for your slicer. Save a painter project if you want to come back and edit it later.
 
-**[Download STL Painter 1.0.12 for Windows (64-bit portable ZIP)](https://github.com/secretsather/stl-painter/releases/download/v1.0.12/STL-Painter-1.0.12-Windows-x64.zip)**
+**[Download STL Painter 1.0.13 for Windows (64-bit portable ZIP)](https://github.com/secretsather/stl-painter/releases/download/v1.0.13/STL-Painter-1.0.13-Windows-x64.zip)**
+
+[What's new in STL Painter](CHANGELOG.md)
 
 ![STL Painter showing the sample fluted vessel with an orange surface and cream stripe, the view cube, and the four-color palette](assets/stl-painter-workspace.png)
 
@@ -16,38 +18,6 @@ Use **64-bit Windows** with graphics support for WebGL 2.
 
 Keep your saved projects in a separate folder. To update a portable copy, extract the new ZIP into its own folder and open your existing projects from there.
 
-## What's new in 1.0.12
-
-- **Reuse a filament palette.** Choose **Save palette** to keep the base color, filaments, and mixed-color recipes in a `.stlpalette` file. Choose **Load palette** in another project to apply it. One **Undo** restores the previous palette and artwork.
-- **See where Fill will paint.** Press **F** and hover over the model. The highlight follows the current edge angle and paint-boundary setting. Click to fill the highlighted region.
-- **Adjust Fill without moving the mouse.** Press **[** to lower the edge angle by 5° or **]** to raise it by 5°. The preview updates under the pointer.
-
-## What's new in 1.0.11
-
-- **Resize stamps live.** Drag the pixel-width slider to watch the artwork grow or shrink on the model. With edge refinement enabled, the final subdivision runs once when you release the slider.
-- **Pick a mix by color.** Click a suggested swatch to set its filaments and percentages. The picker shows up to 90 suggestions across the palette, and you can still enter a custom recipe.
-- **Start painting again from the base color.** Click **Clear all paint** to erase the model, including applied stamps and lettering. One **Undo** restores the painting.
-- Opening large models, saving projects, exporting 3MFs, and matching stamp colors now run in the background. Refined strokes and undo update the affected mesh sections, and Fill reuses connectivity across edits.
-
-For timings, memory measurements, and test conditions, see the [performance review](docs/performance-review.md).
-
-## What's new in 1.0.9
-
-- Preview mixes for every pair or trio of filaments in your palette. Select a suggested swatch, adjust its percentages if needed, then click **Add mix** to paint with it.
-- Browse saved mixes in a collapsible list. Each row shows the name, hex code, and full recipe, including when the sidebar is narrow.
-- Match image stamps to existing spools and mixes by perceived color. The importer can also suggest new mixes from the filaments you already have.
-- Preview blends using a model calibrated on printed PLA. **Add Color** suggests a spool that expands the range of colors your palette can produce.
-- Save recipes in your painter project and export them with painted faces in a 3MF. The horizontal slice check counts the physical filaments each mix uses.
-- Fixed a JavaScript error that could appear when a title update arrived after the app window closed.
-
-## What's new in 1.0.8
-
-- Set brush diameter, text size, and stamp width in **millimeters** for repeatable measurements across models and zoom levels.
-- Use **Align to face** to look straight at any visible polygon with one click, then continue painting.
-- Reopen a saved project with its camera, active tool, selected color, and size settings restored. Older projects gain these settings the next time you save them.
-- Open a project by passing its path to **STL Painter.exe**. The title and header show the active project filename, and Export suggests a matching 3MF filename.
-- Each palette color has a unique RGB value. Opening older projects merges duplicate colors while preserving their appearance on the model and in saved stamps.
-
 ## Paint your first model
 
 1. **Open a model.** Click **Open** and choose a binary or ASCII `.stl`, or try the sample vessel. The upper-left readout shows X, Y, and Z dimensions in millimeters.
@@ -58,7 +28,11 @@ For timings, memory measurements, and test conditions, see the [performance revi
 
 ## Painting tools
 
-Click **Clear all paint** at the bottom of the tool controls to reset the entire model to **Color 1**, including applied stamps and text. Your palette and stamp library stay available. Press **Ctrl+Z** to restore the previous paint in one step.
+**Pick a color from the model.** Hold **Alt** and click a painted spot to select its exact solid color or saved mix. Your current tool stays active.
+
+Click the **padlock** beside a solid color or saved mix to protect surfaces painted with that swatch. For example, lock gold trim and brush across its edge to paint the surrounding area. Fill stops at locked paint, and painting, erasing, stamps, lettering, and Fill Band skip it. Click the padlock again to unlock it. Locks are saved with the painter project.
+
+Choose **Project → Clear all paint** in the header to reset unlocked paint to **Color 1**, including applied stamps and text. Your palette and stamp library stay available. Press **Ctrl+Z** to restore the previous paint in one step.
 
 To paint straight onto an angled face, click **Align to face** in the camera toolbar, then click the polygon. The camera centers on that point and looks straight at the face. Your painting tool resumes immediately. Press **Esc** to cancel before selecting a face.
 
@@ -66,13 +40,16 @@ To paint straight onto an angled face, click **Align to face** in the camera too
 | --- | --- |
 | **Brush** | Drag to paint the visible surface. Set **Diameter** in pixels or millimeters. |
 | **Fill** | Hover over a face to see which area will change. Click to fill the highlighted region with the selected color. **Edge angle** controls how sharp an edge the fill can cross. **Respect paint boundaries** stops the fill at an existing color change. |
-| **Eraser** | Drag to restore the base color. Brush and Eraser share the **Refine stroke edges** setting. |
+| **Fill Gaps** | Press **G** to preview pinholes. **Maximum gap size** (default **0.5 mm**) measures the widest span of a patch enclosed by one swatch. Turn on **Include thin seams** to also fill narrow strips with the same solid color or saved mix on both sides. For seams, the threshold measures across the connected surface, and wider sections stay intact. Locked paint and open edges are skipped. Click **Apply** to commit the preview in one undoable edit, or press **Esc** to cancel. |
+| **Fill Band** | Press **H** and choose **Bottom to top (Z)**, **Left to right (X)**, or **Front to back (Y)**. The default is Z. **From** and **To** are measured in millimeters from the model’s bottom, left, or front edge respectively. Click two bounds in either order or enter them directly. Click beyond an end of the model to include that edge. Orbit to inspect the preview, then choose **Apply band** to paint the unlocked surfaces within it. **Esc** cancels the preview. |
+| **Fill Lasso** | Press **L** and position the view. Click on the model or background to place the first node and lock the camera. A smooth curve passes through each node. Move the pointer to preview the next arc, then click to place it. After placing at least three nodes, click the first node again to close the loop and preview the fill. **Refine stroke edges** follows the curve across coarse triangles. Click **Apply lasso** to paint the visible, unlocked area in one undoable edit, or press **Esc** to cancel. Either action releases the camera. |
 | **Stamps** | Select **Import artwork** for a PNG, JPEG, WebP, or BMP. Choose existing palette colors or add colors from the image, then click **Add to stamps**. Adjust width and rotation, drag into position, and click **Apply stamp**. |
 | **Text** | Type a label, choose an installed font and palette color, and set size, bold, italic, or multiline alignment. Position it and click **Apply text**. The project stores applied lettering as surface paint. |
+| **Eraser** | Drag to restore the base color. Brush and Eraser share the **Refine stroke edges** setting. |
 
 **Physical sizing.** Select **mm** beside Diameter, Font size, or Width and type a measurement. A 2 mm brush and an 8 mm stamp keep their size as you zoom. Brush and Eraser share a diameter. Stamp width includes transparent margins. Font size is the font’s em size, so the visible height depends on the letters and font. Measurements use one STL coordinate unit per millimeter and apply in the view plane at the surface under the cursor or artwork center. Face a flat surface straight on to reproduce a dimension along it. Select **px** for a fixed size on screen.
 
-**Edge refinement** starts on. It subdivides the painted surface along a boundary to smooth strokes, stamp outlines, and lettering. Stamps and text use a quick preview while you drag and refine when you release. **Esc** cancels placement and returns to Brush.
+**Edge refinement** starts on. It subdivides the painted surface along a boundary to smooth strokes, stamp outlines, and lettering. When you finish a stroke or apply paint, subdivisions along the edited edge merge back together wherever both halves use the same swatch. One **Undo** restores the previous colors and subdivisions. Stamps and text use a quick preview while you drag and refine when you release. **Esc** cancels placement and returns to Brush.
 
 **Stamp transparency.** In the import preview, scroll over a detail to zoom and drag to pan. Adjust **Opacity cutoff** to remove a faint halo or recover thin lines. **Show removed pixels** highlights what the cutoff excludes. The checkerboard marks areas where the model’s existing paint will show through. Select **Fit image** to see the whole stamp again.
 
@@ -80,9 +57,11 @@ To paint straight onto an angled face, click **Align to face** in the camera too
 
 ## Palette and printer color limits
 
+Opening another STL in the same session carries over your current palette, mixed-color recipes, and selected swatch. The new model starts in the palette’s base color. Opening a saved painter project restores that project’s own palette and selection.
+
 **Reuse a palette across projects.** Click **Save palette** (the disk beside the Palette heading) to save the base color, filaments, and mixed-color recipes to a `.stlpalette` file. In another project, click **Load palette** (the folder) and select that file. Base-colored areas use the new base. Painted areas and stamp pixels keep exact color matches wherever possible and otherwise use the closest available swatch. **Undo** restores the previous palette and color assignments in one step.
 
-**Palette** holds physical filaments. **Mixed colors** below it holds recipes. Click either heading to collapse or expand its list. Click **+** beside Mixed colors and choose **Two filaments** or **Three filaments**. Pair suggestions use 50/50, 33/67, and 67/33. Trio suggestions give one filament 34% and the other two 33%. Larger palettes show a selection of up to 90 swatches. Select a swatch to preview the recipe and click **Add mix** to keep it. Each filament must contribute at least 33%.
+**Palette** holds physical filaments. **Mixed colors** below it holds recipes. Click either heading to collapse or expand its list. Click **+** beside Mixed colors and choose **Two filaments** or **Three filaments**. Pair suggestions use 50/50, 33/67, and 67/33. Each suggested trio has one swatch at 33/33/34. If you already saved that trio with the extra 1% on another filament, the picker shows your saved recipe. Larger palettes show a selection of up to 90 swatches. Select a swatch to preview the recipe and click **Add mix** to keep it. Each filament must contribute at least 33%.
 
 Click a mix to paint with it or click its colored square to edit the recipe. Choose another suggested swatch or edit the percentages directly. Mixed swatches use an offline model calibrated on printed PLA. Layer height, surface angle, and the spools you load can affect the printed result. When reopening an older project, a mix keeps its original swatch if updating the preview would make it identical to another color. Its recipe and painted regions are preserved.
 
@@ -98,14 +77,19 @@ The limit defaults to four, accepts 1–16 or **Off**, and is remembered on this
 
 ## Controls
 
+[Download the printable hotkey cheat sheet (PDF)](docs/STL-Painter-Hotkeys.pdf)
+
 | Action | Control |
 | --- | --- |
-| Brush / Fill / Eraser / Stamps / Text | B / F / E / S / T |
+| Brush / Fill / Fill Gaps / Fill Band / Fill Lasso / Stamps / Text / Eraser | B / F / G / H / L / S / T / E |
+| Pick a painted color or mix | Alt + left click |
+| Select a swatch in sidebar order (solid colors first, then saved mixes) | **1–9** select the first nine. **0** selects the tenth. |
 | Orbit / pan / zoom | Right-drag / middle-drag / scroll |
 | Fit the model in the studio view | Home |
 | Change brush or eraser diameter | [ and ] |
-| Decrease / increase the Fill edge angle by 5° while previewing | [ and ] |
-| Apply a positioned stamp or text from the viewport | Enter |
+| Decrease / increase the Fill edge angle while previewing | Tap [ or ] for 1°. Hold to repeat after a short pause. |
+| Apply a ready Fill Band, Fill Gaps, Fill Lasso, stamp, or text preview | **Enter** or **numpad Enter**. In the text editor, Enter starts a new line. |
+| Remove the last Fill Lasso node, including from a closed preview | Backspace |
 | Cancel placement and return to Brush | Esc |
 | Undo / redo | Ctrl+Z / Ctrl+Y or Ctrl+Shift+Z |
 | Open / save / save as | Ctrl+O / Ctrl+S / Ctrl+Shift+S |
@@ -115,6 +99,7 @@ Click **Perspective** to switch to orthographic projection. Drag the left edge o
 ## Model and artwork limits
 
 - STL Painter supports up to **1,500,000 source triangles** and warns before opening a model above **1,000,000**.
+- Each project supports **2,000,000 paint triangles**, including the initial paint grid and subdivisions added while painting. The status bar shows the current total beside the source triangle count.
 - A stamp image can be up to **32 MB** and **16 megapixels**. Palette mapping samples up to **512 pixels** along the longest side. Each project has a **96 MB** embedded artwork budget.
 - Export preserves the usable source triangles and encodes the refined paint boundaries in the 3MF. Undo history lasts for the current editing session.
 

@@ -178,6 +178,7 @@ export class RefinedStroke {
   }
 
   projectFootprint(footprint) {
+    const { xmin, xmax, ymin, ymax } = footprint;
     const v = this.view,
       cache = v.picks();
     const { normals } = v.surface;
@@ -274,6 +275,7 @@ export class RefinedStroke {
       return result;
     };
     for (const id of footprintCells(v, cache, footprint)) {
+      if (v.project.lockedSlots?.has(v.project.paint[id])) continue;
       const chunk = v.chunkFor(id), local = id - chunk.range.cell;
       const { positions, owners, levels } = chunk.data;
       const old = this.edits.get(id) ?? v.project.paint[id];

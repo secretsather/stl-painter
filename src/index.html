@@ -23,6 +23,12 @@
       <span class="header-rule"></span><span id="docname"></span
       ><span id="dirty" title="Unsaved changes" hidden>●</span>
       <div class="header-actions">
+        <button id="project-actions" popovertarget="project-menu">Project<i data-lucide="chevron-down" aria-hidden="true"></i></button>
+        <div id="project-menu" popover>
+          <button id="clear-paint" popovertarget="project-menu" popovertargetaction="hide" title="Reset unlocked paint to the base color (Color 1)">
+            <i data-lucide="eraser" aria-hidden="true"></i>Clear all paint
+          </button>
+        </div>
         <button id="open"><i data-lucide="folder-open"></i>Open</button>
         <div class="save-group">
           <button id="save"><i data-lucide="save"></i>Save</button
@@ -36,6 +42,7 @@
     <main>
       <section id="viewport" aria-label="3D painting viewport">
         <div id="fill-highlight" aria-hidden="true" hidden><canvas></canvas></div>
+        <svg id="lasso-outline" aria-hidden="true"><path id="lasso-curve" /><path id="lasso-guide" /><g></g></svg>
         <div id="stamp-outline" aria-hidden="true" hidden></div>
         <div class="model-label">
           <span class="eyebrow" id="model-kind"></span>
@@ -50,13 +57,25 @@
           <button data-tool="Fill" title="Fill (F)" aria-label="Fill">
             <i data-lucide="paint-bucket"></i>
           </button>
-          <button data-tool="Eraser" title="Eraser (E)" aria-label="Eraser">
-            <i data-lucide="eraser"></i>
+          <button data-tool="Fill Gaps" title="Fill Gaps (G)" aria-label="Fill Gaps" aria-keyshortcuts="G">
+            <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-linejoin="round">
+              <path d="M12 3 22 21H2Z"/>
+              <path d="M7 12h10l-5 9Z" fill="currentColor"/>
+            </svg>
+          </button>
+          <button data-tool="Band" title="Fill Band (H)" aria-label="Fill Band" aria-keyshortcuts="H">
+            <i data-lucide="layers"></i>
+          </button>
+          <button data-tool="Fill Lasso" title="Fill Lasso (L)" aria-label="Fill Lasso" aria-keyshortcuts="L">
+            <i data-lucide="lasso"></i>
           </button>
           <button data-tool="Stamps" title="Stamps (S)" aria-label="Stamps">
             <i data-lucide="stamp"></i>
           </button>
           <button data-tool="Text" title="Text (T)" aria-label="Text"><i data-lucide="type"></i></button>
+          <button data-tool="Eraser" title="Eraser (E)" aria-label="Eraser">
+            <i data-lucide="eraser"></i>
+          </button>
           <span></span
           ><button id="undo" title="Undo (Ctrl+Z)" aria-label="Undo">
             <i data-lucide="undo-2"></i></button
@@ -135,7 +154,7 @@
           <section class="panel tool-panel">
             <div class="section-head">
               <h2 id="tool-title">Brush</h2>
-              <kbd id="tool-key">B</kbd>
+              <span class="shortcut"><span id="tool-symbol" aria-hidden="true"></span><kbd id="tool-key">B</kbd></span>
             </div>
             <div id="brush-panel">
               <label class="control-label" for="brush-size"
@@ -146,15 +165,40 @@
                 <input type="number" id="brush-mm" min="0" step="any" value="2" hidden />
                 <select id="brush-unit" aria-label="Brush diameter unit"><option>px</option><option>mm</option></select>
               </div>
-              <label class="check"><input type="checkbox" id="refine-edges" checked />Refine stroke edges</label>
+            </div>
+            <label class="check" id="edge-control"><input type="checkbox" id="refine-edges" checked />Refine stroke edges</label>
+            <div id="lasso-panel" hidden>
+              <button class="primary wide" id="apply-lasso" aria-keyshortcuts="Enter" title="Apply lasso (Enter)" disabled>Apply lasso</button>
             </div>
             <div id="fill-panel" hidden>
               <label class="control-label" for="angle"
                 >Edge angle <output id="angle-value">35°</output></label
-              ><input type="range" id="angle" min="0" max="180" value="35" aria-keyshortcuts="[ ]" />
+              ><input type="range" id="angle" min="0" max="180" step="1" value="35" aria-keyshortcuts="[ ]" />
               <label class="check"
                 ><input id="protect" type="checkbox" checked />Respect paint boundaries</label
               >
+            </div>
+            <div id="band-panel" hidden>
+              <label class="control-label" for="band-direction">Direction</label>
+              <select id="band-direction">
+                <option value="2">Bottom to top (Z)</option>
+                <option value="0">Left to right (X)</option>
+                <option value="1">Front to back (Y)</option>
+              </select>
+              <div class="band-bounds">
+                <label>From (mm)<input id="band-lower" type="number" step="any" /></label>
+                <label>To (mm)<input id="band-upper" type="number" step="any" /></label>
+              </div>
+              <button id="apply-band" class="primary wide" aria-keyshortcuts="Enter" title="Apply band (Enter)" disabled>Apply band</button>
+            </div>
+            <div id="gap-panel" hidden>
+              <label class="control-label" for="gap-width">Maximum gap size (mm)</label>
+              <div class="size-control">
+                <input id="gap-width" type="number" min="0" step="any" value="0.5" />
+                <button id="apply-gaps" aria-keyshortcuts="Enter" title="Apply gap fills (Enter)" disabled>Apply</button>
+              </div>
+              <label class="check"><input id="gap-seams" type="checkbox" />Include thin seams</label>
+              <p class="gap-status hint"><span id="gap-spinner" aria-hidden="true" hidden></span><span id="gap-count" role="status"></span></p>
             </div>
             <div id="stamp-panel" hidden>
               <button id="import-image" class="wide">
@@ -211,21 +255,19 @@
                   >Cutoff angle <output id="cutoff-value">45°</output></label
                 ><input id="cutoff" type="range" min="0" max="90" value="45" />
               </div>
-              <button id="apply" class="primary wide">
+              <button id="apply" class="primary wide" aria-keyshortcuts="Enter" title="Apply placement (Enter)">
                 <i data-lucide="check"></i><span id="apply-label">Apply stamp</span>
               </button>
             </div>
             <p id="tool-hint" class="hint"></p>
-            <button id="clear-paint" class="wide" title="Reset the entire model to its base color (Color 1)">
-              <i data-lucide="eraser"></i>Clear all paint
-            </button>
           </section>
         </div>
       </aside>
     </main>
     <footer>
-      <span class="status-dot"></span><span id="status" role="status">Ready</span
-      ><span id="faces"></span>
+      <span class="status-dot"></span><span id="status" role="status">Ready</span>
+      <span id="faces"></span>
+      <span id="paint-triangles" title="Total paint triangles, including subdivisions, compared with the project limit"></span>
     </footer>
     <dialog id="mix-editor" aria-labelledby="mix-title">
       <form method="dialog">
@@ -303,22 +345,29 @@
           The slice color check counts painted surface colors at each height above the model bottom.
           A warning lists the colors at an example height where the most colors meet.
         </p>
+        <div id="tool-shortcuts" aria-label="Painting tool shortcuts"></div>
         <dl>
           <dt>Paint or position stamps and text</dt>
           <dd>Left drag</dd>
+          <dt>Pick the painted color or mix under the pointer</dt>
+          <dd>Alt + left click</dd>
+          <dt>Select a swatch in sidebar order (palette, then saved mixes)</dt>
+          <dd>1–9, then 0 for the tenth</dd>
           <dt>Orbit / pan</dt>
           <dd>Right / middle drag</dd>
           <dt>Zoom / fit model</dt>
           <dd>Wheel / Home</dd>
-          <dt>Brush / Fill / Eraser / Stamps / Text</dt>
-          <dd>B / F / E / S / T</dd>
           <dt>Brush diameter</dt>
           <dd>[ &nbsp; ]</dd>
-          <dt>Decrease / increase Fill edge angle by 5°</dt>
+          <dt>Decrease / increase Fill edge angle (tap for 1°, hold to repeat)</dt>
           <dd>[ &nbsp; ]</dd>
-          <dt>Apply positioned stamp or text</dt>
-          <dd>Enter</dd>
-          <dt>Cancel stamp or text placement and return to Brush</dt>
+          <dt>Apply the active tool’s preview</dt>
+          <dd>Enter or numpad Enter</dd>
+          <dt>Remove the last Fill Lasso node</dt>
+          <dd>Backspace</dd>
+          <dt>Cancel Fill Gaps, stamp or text placement and return to Brush</dt>
+          <dd>Esc</dd>
+          <dt>Cancel a Fill Lasso or Fill Band preview</dt>
           <dd>Esc</dd>
           <dt>Undo / redo</dt>
           <dd>Ctrl Z / Ctrl Y</dd>

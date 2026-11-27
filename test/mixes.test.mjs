@@ -21,9 +21,13 @@ test('recipes require two or three distinct physical filaments, each at least 33
 test('stamp matching can add an exact three-filament recipe without allocating a spool', () => {
   const palette = ['#FF0000','#00FF00','#0000FF'];
   const candidates = mixCandidates({ palette });
-  const { pixels, added, recipes } = mapImage(Uint8Array.of(34,34,34,255,0,0,0,0), palette, 1, 50, { candidates });
-  assert.deepEqual(added, ['#222222']);
-  assert.deepEqual(recipes, [recipe(33,34,33)]);
+  assert.equal(candidates.filter(c => c.parts.length === 3).length, 1);
+  const { pixels, added, recipes } = mapImage(Uint8Array.of(32,32,32,255,0,0,0,0), palette, 1, 50, { candidates });
+  assert.deepEqual(added, ['#202020']);
+  assert.deepEqual(recipes, [recipe(33,33,34)]);
+  const prior = recipe(33,34,33).reverse();
+  const existing = { palette: [...palette, mixHex(palette, prior)], mixes: {3: prior} };
+  assert.ok(mixCandidates(existing).every(c => c.parts.length !== 3));
   assert.deepEqual([...pixels], [3,255]);
   assert.deepEqual(mapImage(Uint8Array.of(255,0,0,255), palette, 1, 0, { candidates }).added, []);
 });

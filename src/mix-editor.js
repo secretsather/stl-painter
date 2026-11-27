@@ -1,34 +1,34 @@
-import { filamentGroups, mixHex, physicalSlots, recipeLabel, validRecipe } from './mixes.js';
+import { filamentGroups, mixHex, physicalSlots, recipeLabel, savedTrios, TRIO_SHARES, trioKey, validRecipe } from './mixes.js';
 
 const pairRatios = [[50, 50], [33, 67], [67, 33]];
-const trioRatios = [[33, 33, 34], [33, 34, 33], [34, 33, 33]];
 const recipeKey = parts => parts.map(({slot, percent}) => `${slot}=${percent}`).sort().join(',');
 
 const MAX_SUGGESTIONS = 90;
 
-function suggestedRecipes(physical, current) {
+function suggestedRecipes(physical, current, trios) {
   const groups = [...filamentGroups(physical)];
   const makeRecipe = (slots, weights) => slots.map((slot, i) => ({slot, percent: weights[i]}));
-  if (groups.length * 3 <= MAX_SUGGESTIONS) {
-    return groups.flatMap(slots => (slots.length === 2 ? pairRatios : trioRatios)
-      .map(weights => makeRecipe(slots, weights)));
+  if (current?.length === 3) trios.set(trioKey(current), current);
+  const trioRecipe = slots => trios.get(slots.join(',')) ?? makeRecipe(slots, TRIO_SHARES);
+  const pairs = groups.filter(slots => slots.length === 2);
+  const triples = groups.filter(slots => slots.length === 3);
+  if (pairs.length * pairRatios.length + triples.length <= MAX_SUGGESTIONS) {
+    return groups.flatMap(slots => slots.length === 3 ? [trioRecipe(slots)] :
+      pairRatios.map(weights => makeRecipe(slots, weights)));
   }
 
-  // Sample across the entire palette before computing print colors or creating buttons.
-  // Give pairs and trios equal space, cycling through all three presets in each set.
-  const recipes = [];
-  const budget = MAX_SUGGESTIONS / 2;
-  for (const ratios of [pairRatios, trioRatios]) {
-    const size = ratios[0].length;
-    const choices = groups.filter(slots => slots.length === size);
-    const sampled = Array.from({length: budget}, (_, i) =>
-      makeRecipe(choices[Math.floor(i * choices.length / budget)], ratios[i % 3]));
-    if (current?.length === size && !sampled.some(parts => recipeKey(parts) === recipeKey(current))) {
-      sampled[sampled.length - 1] = current;
-    }
-    recipes.push(...sampled);
+  // Spread each sample over the palette. If every trio fits, give spare slots to pairs.
+  const trioCount = Math.min(triples.length, MAX_SUGGESTIONS / 2);
+  const pairCount = MAX_SUGGESTIONS - trioCount;
+  const pairSample = Array.from({length: pairCount}, (_, i) =>
+    makeRecipe(pairs[Math.floor(i * pairs.length / pairCount)], pairRatios[i % pairRatios.length]));
+  const trioSample = Array.from({length: trioCount}, (_, i) =>
+    trioRecipe(triples[Math.floor(i * triples.length / trioCount)]));
+  if (current) {
+    const sample = current.length === 3 ? trioSample : pairSample;
+    if (!sample.some(parts => recipeKey(parts) === recipeKey(current))) sample[sample.length - 1] = current;
   }
-  return recipes;
+  return [...pairSample, ...trioSample];
 }
 
 export function chooseMix(project, slot, accept) {
@@ -73,7 +73,7 @@ export function chooseMix(project, slot, accept) {
   function showSuggestions() {
     const list = $('mix-suggestions');
     const swatches = document.createDocumentFragment();
-    for (const recipe of suggestedRecipes(physical, initial)) {
+    for (const recipe of suggestedRecipes(physical, initial, savedTrios(project))) {
       const hex = mixHex(project.palette, recipe);
       const button = document.createElement('button');
       button.type = 'button';
@@ -111,7 +111,7 @@ export function chooseMix(project, slot, accept) {
       share.max = n === 2 ? 67 : 34;
       share.step = 1;
       share.required = true;
-      share.value = previous?.length === n ? previous[i].percent : n === 2 ? 50 : i === 0 ? 34 : 33;
+      share.value = previous?.length === n ? previous[i].percent : n === 2 ? 50 : TRIO_SHARES[i];
       share.setAttribute('aria-label', 'Filament ' + (i + 1) + ' percentage');
       share.oninput = () => {
         if (share.validity.valid) {

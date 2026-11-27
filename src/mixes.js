@@ -4,6 +4,19 @@ import { swatchLab, distanceSquared } from './perceptual-color.js';
 // Paint and stamp pixels share byte-sized swatch indices. 255 marks transparency.
 export const MAX_SWATCHES = 255;
 export const MAX_FILAMENTS = 16;
+export const TRIO_SHARES = [33, 33, 34];
+
+export function savedTrios(project) {
+  const trios = new Map();
+  for (const parts of Object.values(project.mixes ?? {})) {
+    if (parts.length === 3) trios.set(trioKey(parts), parts);
+  }
+  return trios;
+}
+
+export function trioKey(parts) {
+  return parts.map(part => part.slot).sort((a, b) => a - b).join(',');
+}
 
 export function physicalSlots(project) {
   return project.palette.map((_, slot) => slot).filter(slot => !project.mixes?.[slot]);
@@ -38,6 +51,7 @@ export function* filamentGroups(physical) {
 
 export function mixCandidates(project) {
   const physical = physicalSlots(project), seen = new Set(project.palette), result = [];
+  const trios = savedTrios(project);
   for (const parts of Object.values(project.mixes ?? {})) seen.add(mixHex(project.palette, parts));
   function add(slots, weights) {
     const parts = slots.map((slot, i) => ({ slot, percent: weights[i] }));
@@ -50,9 +64,7 @@ export function mixCandidates(project) {
   for (const slots of filamentGroups(physical)) {
     if (slots.length === 2) {
       for (let ratio = 33; ratio <= 67; ratio++) add(slots, [ratio, 100 - ratio]);
-    } else {
-      for (let extra = 0; extra < 3; extra++) add(slots, slots.map((_, i) => i === extra ? 34 : 33));
-    }
+    } else if (!trios.has(slots.join(','))) add(slots, TRIO_SHARES);
   }
   return result;
 }

@@ -2,7 +2,7 @@ import { walkPaintCells } from './paint-tree.js';
 // The leaf order is part of the project format and matches the four-child split in the painted 3MF.
 export const LARGE_MODEL_FACES = 1_000_000;
 export const MAX_FACES = 1_500_000;
-export const MAX_CELLS = 1_800_000;
+export const MAX_CELLS = 2_000_000;
 const EDIT_RESERVE = 200_000;
 export const initialPalette = ['#E7DDC8', '#DE7248', '#386D67', '#384956'];
 export function bounds(vertices) {
@@ -325,7 +325,7 @@ export function adjacency(p, range, seams) {
 }
 
 export function flood(p, surface, start, angle, protect, seen = new Uint8Array(p.paint.length)) {
-  if (start < 0 || start >= p.paint.length) return [];
+  if (start < 0 || start >= p.paint.length || p.lockedSlots?.has(p.paint[start])) return [];
   surface.graph ??= adjacency(p);
   const { links, extra } = surface.graph,
     seed = p.paint[start],
@@ -337,7 +337,7 @@ export function flood(p, surface, start, angle, protect, seen = new Uint8Array(p
       face = surface.owners[id] * 3,
       n = surface.normals;
     function visit(next) {
-      if (next < 0 || seen[next] || (protect && p.paint[next] !== seed)) return;
+      if (next < 0 || seen[next] || p.lockedSlots?.has(p.paint[next]) || (protect && p.paint[next] !== seed)) return;
       const f = surface.owners[next] * 3;
       if (face !== f && n[face] * n[f] + n[face + 1] * n[f + 1] + n[face + 2] * n[f + 2] < cutoff)
         return;

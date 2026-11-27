@@ -4,9 +4,9 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { _electron } from 'playwright';
-import { fixture } from './fixture.mjs';
+import { fixture, gapGrid } from './fixture.mjs';
 import { readProject, writeProject } from '../src/files.js';
-import { readSTL } from '../src/mesh.js';
+import { makeSurface, readSTL } from '../src/mesh.js';
 import { mixHex } from '../src/mixes.js';
 import { applyLeafEdits } from '../src/paint-tree.js';
 
@@ -37,6 +37,795 @@ async function desktop(t, dir) {
   return { app, page, dir, projectFile, click };
 }
 
+test('brush release and lasso Apply merge nested paint into the selected mix in one undo step', async t => {
+  const { click, page, projectFile } = await desktop(t);
+  const project = gapGrid(32, 32, 1);
+  project.mixes = {4: [{slot: 1, percent: 50}, {slot: 2, percent: 50}]};
+  project.palette.push(mixHex(project.palette, project.mixes[4]));
+  project.paint.fill(4);
+  const uniform = project.paint.slice(), center = 2 * (16 * 32 + 16);
+  Object.assign(project, applyLeafEdits(project, new Map([[center,
+    {side: 2, left: 4, right: {side: 3, left: 1, right: 4}}]])));
+  project.editingContext = {color: project.palette[4]};
+  await fs.writeFile(projectFile, writeProject(project));
+  await click('open');
+  const checkCounts = async paintCount => {
+    assert.equal(await page.locator('#faces').innerText(), project.depth.length.toLocaleString() + ' source triangles');
+    assert.equal(await page.locator('#paint-triangles').innerText(), paintCount.toLocaleString() + ' / 2,000,000 paint triangles');
+  };
+  await checkCounts(project.paint.length);
+  await page.locator('#view').selectOption('Top');
+  const rect = await page.locator('#viewport > canvas').boundingBox();
+  const x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
+  const snapshot = async () => {
+    await click('save');
+    return readProject(await fs.readFile(projectFile));
+  };
+  for (const mode of ['plain brush', 'refined brush', 'lasso']) {
+    if (mode === 'lasso') {
+      await page.locator('[data-tool="Fill Lasso"]').click();
+      for (const [dx,dy] of [[-60,-60],[60,-60],[60,60],[-60,60],[-60,-60]])
+        await page.mouse.click(x + dx, y + dy);
+      assert.deepEqual((await snapshot()).splits, project.splits, 'preview preserves saved splits');
+      await checkCounts(project.paint.length);
+      await click('apply-lasso');
+    } else {
+      await page.locator('#refine-edges').setChecked(mode === 'refined brush');
+      await page.locator('#brush-size').press('End');
+      await page.mouse.click(x, y);
+    }
+    const merged = await snapshot();
+    await checkCounts(uniform.length);
+    assert.deepEqual(merged.paint, uniform, mode);
+    assert.equal(merged.splits, undefined, mode);
+    await click('undo');
+    const restored = await snapshot();
+    await checkCounts(project.paint.length);
+    assert.deepEqual(restored.splits, project.splits);
+    assert.deepEqual(restored.paint, project.paint);
+    assert.ok(await page.locator('#undo').isDisabled());
+    await click('redo');
+    await checkCounts(uniform.length);
+    assert.deepEqual((await snapshot()).paint, uniform);
+    await click('undo');
+  }
+});
+
+test('Fill Lasso uses toolbar icons, locks the view, previews and applies one visible-surface edit', async t => {
+  const { page, click, projectFile } = await desktop(t);
+  const project = gapGrid(6, 6, 10), topFaces = project.paint.length;
+  const below = project.vertices.map((n, i) => i % 3 === 2 ? n - 4 : n);
+  const offset = project.vertices.length / 3;
+  project.vertices = Float32Array.from([...project.vertices, ...below]);
+  project.faces = Uint32Array.from([...project.faces, ...project.faces.map(n => n + offset)]);
+  project.depth = new Uint8Array(topFaces * 2);
+  project.paint = new Uint8Array(topFaces * 2);
+  project.paint[42] = 2;
+  project.mixes = {4: [{slot: 1, percent: 50}, {slot: 2, percent: 50}]};
+  project.palette.push(mixHex(project.palette, project.mixes[4]));
+  project.editingContext = { lockedSlots: [2], color: project.palette[4] };
+  await fs.writeFile(projectFile, writeProject(project));
+  await click('open');
+  await page.locator('#view').selectOption('Top');
+  await page.locator('#viewport > canvas').focus();
+  await page.keyboard.press('l');
+  const outline = page.locator('#lasso-curve'), apply = page.locator('#apply-lasso');
+  const toolIcons = page.locator('.toolrail [data-tool] svg');
+  assert.deepEqual(await page.locator('#tool-shortcuts svg').evaluateAll(icons => icons.map(i => i.innerHTML)),
+    await toolIcons.evaluateAll(icons => icons.map(i => i.innerHTML)));
+  assert.equal(await page.locator('#tool-key').innerText(), 'L');
+  const rect = await page.locator('#viewport > canvas').boundingBox();
+  const cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2;
+  async function camera() {
+    await click('save');
+    return readProject(await fs.readFile(projectFile)).editingContext.camera;
+  }
+  async function navigate(button) {
+    await page.mouse.move(cx, cy);
+    await page.mouse.down({button});
+    await page.mouse.move(cx + 45, cy + 25, {steps: 3});
+    await page.mouse.up({button});
+  }
+  assert.ok(await page.locator('#fit').isEnabled());
+  const initial = await camera();
+  await navigate('right');
+  const orbited = await camera();
+  assert.notDeepEqual(orbited.position, initial.position);
+  await navigate('middle');
+  const panned = await camera();
+  assert.notDeepEqual(panned.target, orbited.target);
+  await page.mouse.move(cx, cy);
+  await page.mouse.wheel(0, -140);
+  assert.notDeepEqual(await camera(), panned);
+  await click('fit');
+  await page.locator('#view').selectOption('Top');
+  const nodes = page.locator('#lasso-outline circle');
+  async function draw() {
+    const x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
+    await page.mouse.click(rect.x + 8, y);
+    assert.ok(await page.locator('#fit').isDisabled());
+    assert.equal(await nodes.count(), 1);
+    await page.mouse.move(x - 60, y - 60);
+    await page.mouse.down();
+    await page.mouse.move(x + 25, y - 10, {steps: 5});
+    await page.mouse.up();
+    assert.equal(await nodes.count(), 2, 'dragging and releasing adds only the clicked node');
+    await page.mouse.click(rect.x + 8, y);
+    assert.equal(await nodes.count(), 2);
+    for (const [dx,dy] of [[70,-50],[10,10],[45,65],[-75,55]]) await page.mouse.click(x + dx, y + dy);
+    assert.equal(await nodes.count(), 6);
+    assert.match(await outline.getAttribute('d'), /C/);
+    assert.doesNotMatch(await outline.getAttribute('d'), /Z$/);
+    assert.ok(await apply.isDisabled());
+    const placed = await outline.getAttribute('d');
+    await page.mouse.move(rect.x + rect.width + 5, y);
+    assert.equal(await outline.getAttribute('d'), placed);
+    await page.mouse.click(rect.x + 10, y + 1);
+    await page.waitForFunction(() => !document.querySelector('#apply-lasso').disabled);
+    assert.match(await outline.getAttribute('d'), /C.*Z$/);
+    await page.keyboard.press('Home');
+    assert.ok(await page.locator('#fit').isDisabled());
+  }
+  await page.mouse.click(cx, cy);
+  await page.keyboard.press('Escape');
+  assert.equal(await nodes.count(), 0);
+  assert.ok(await page.locator('#fit').isEnabled());
+  await draw();
+  const locked = await camera();
+  await navigate('right');
+  await navigate('middle');
+  await page.mouse.wheel(0, -140);
+  assert.deepEqual(await camera(), locked);
+  await page.keyboard.press('Escape');
+  assert.ok(await apply.isDisabled());
+  assert.equal(await outline.getAttribute('d'), null);
+  assert.ok(await page.locator('#fit').isEnabled());
+  for (const refine of [false, true]) {
+    await page.locator('#refine-edges').setChecked(refine);
+    await draw();
+    await click('save');
+    assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, project.paint);
+    await page.locator('#viewport > canvas').press(refine ? 'Enter' : 'NumpadEnter');
+    assert.ok(await page.locator('#fit').isEnabled());
+    await click('save');
+    const painted = readProject(await fs.readFile(projectFile)), surface = makeSurface(painted);
+    assert.ok(painted.paint.includes(4));
+    assert.equal(painted.paint.length > project.paint.length, refine);
+    assert.equal(await page.locator('#paint-triangles').innerText(), painted.paint.length.toLocaleString() + ' / 2,000,000 paint triangles');
+    for (let i = 0; i < painted.paint.length; i++) {
+      if (surface.owners[i] >= topFaces) assert.equal(painted.paint[i], 0);
+      if (surface.owners[i] === 42) assert.equal(painted.paint[i], 2);
+    }
+    await click('undo');
+    await click('save');
+    assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, project.paint);
+    assert.ok(await page.locator('#undo').isDisabled());
+  }
+});
+
+test('Fill Lasso previews and paints the curved span outside its clicked node bounds', async t => {
+  const { page, click, projectFile } = await desktop(t);
+  await fs.writeFile(projectFile, writeProject(gapGrid(2, 2, 10)));
+  await click('open');
+  await page.locator('#view').selectOption('Top');
+  await page.locator('[data-tool="Fill Lasso"]').click();
+  const rect = await page.locator('#viewport > canvas').boundingBox();
+  const x = Math.floor(rect.x + rect.width / 2), y = Math.floor(rect.y + rect.height / 2);
+  const sample = () => page.screenshot({clip: {x, y: y - 80, width: 2, height: 2},
+    style: '#lasso-outline { visibility: hidden; }'});
+  const before = await sample();
+  const nodes = page.locator('#lasso-outline circle');
+  await page.mouse.click(x, y);
+  await page.mouse.click(x + 20, y);
+  await page.keyboard.press('Backspace');
+  assert.equal(await nodes.count(), 1);
+  assert.ok(await page.locator('#fit').isDisabled());
+  await page.keyboard.press('Backspace');
+  assert.equal(await nodes.count(), 0);
+  assert.ok(await page.locator('#fit').isEnabled());
+  for (const [dx, dy] of [[-72,-72], [72,-72], [72,72], [-72,72]]) await page.mouse.click(x + dx, y + dy);
+  const outline = page.locator('#lasso-curve'), guide = page.locator('#lasso-guide');
+  await page.mouse.move(x - 72, y - 72);
+  const arc = await guide.getAttribute('d');
+  assert.match(arc, /C/);
+  const previewedLoop = await outline.getAttribute('d') + ' ' + arc.slice(arc.indexOf('C')) + ' Z';
+  await page.mouse.click(x - 72, y - 72);
+  assert.equal(await outline.getAttribute('d'), previewedLoop);
+  await page.waitForFunction(() => !document.getElementById('apply-lasso').disabled);
+  const preview = await sample();
+  assert.ok(!before.equals(preview), 'the fill reaches past the straight line between the top nodes');
+  await page.keyboard.press('Backspace');
+  assert.equal(await nodes.count(), 3);
+  assert.doesNotMatch(await outline.getAttribute('d'), /Z$/);
+  assert.ok(await page.locator('#apply-lasso').isDisabled());
+  assert.ok(await page.locator('#fit').isDisabled());
+  await page.keyboard.press('Enter');
+  assert.ok(await page.locator('#undo').isDisabled());
+  assert.deepEqual(await sample(), before);
+  await page.mouse.click(x - 72, y + 72);
+  await page.mouse.click(x - 72, y - 72);
+  assert.deepEqual(await sample(), preview);
+  await click('apply-lasso');
+  assert.deepEqual(await sample(), preview);
+  await click('undo');
+  assert.deepEqual(await sample(), before);
+});
+
+test('Fill Gaps previews the entire model and commits precisely the displayed result in one undo step', async t => {
+  const { page, click, projectFile } = await desktop(t);
+  const project = gapGrid();
+  project.mixes = { 4: [{ slot: 1, percent: 50 }, { slot: 2, percent: 50 }] };
+  project.palette.push(mixHex(project.palette, project.mixes[4]));
+  project.paint.fill(4);
+  project.paint[54] = 0;
+  project.paint[66] = 2;
+  await fs.writeFile(projectFile, writeProject(project));
+  await click('open');
+  await page.locator('#view').selectOption('Top');
+  const label = page.locator('#gap-count'), size = page.locator('#gap-width');
+  const expectCount = text => label.filter({ hasText: text }).waitFor();
+  await page.getByRole('button', { name: 'Fill Gaps', exact: true }).click();
+  await expectCount('2 gaps to fill');
+  const layer = page.locator('#fill-highlight canvas');
+  await layer.waitFor({ state: 'visible' });
+  const ink = () => layer.evaluate(c => c.getContext('2d').getImageData(0, 0, c.width, c.height).data.some((v,i) => i % 4 === 3 && v > 0));
+  assert.ok(await ink());
+  await page.locator('#view').selectOption('Studio');
+  await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))));
+  assert.ok(await ink());
+  await page.locator('#viewport > canvas').click();
+  assert.ok(await page.locator('#undo').isDisabled());
+  await page.keyboard.press('NumpadEnter');
+  await click('save');
+  assert.ok(readProject(await fs.readFile(projectFile)).paint.every(slot => slot === 4));
+  await click('undo');
+  await click('save');
+  assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, project.paint);
+  assert.ok(await page.locator('#undo').isDisabled(), 'both gaps are restored by a single undo');
+  await page.getByRole('button', { name: 'Fill Gaps', exact: true }).click();
+  await size.fill('0.13');
+  await expectCount('0 gaps to fill');
+  assert.ok(await page.locator('#apply-gaps').isDisabled());
+  await size.press('Enter');
+  assert.ok(await page.locator('#undo').isDisabled());
+  await size.fill('');
+  await expectCount('Enter a size');
+  await size.fill('0.3');
+  await size.press('Escape');
+  await page.getByRole('button', { name: 'Fill Gaps', exact: true }).click();
+  await expectCount('2 gaps to fill');
+  await page.getByRole('switch', {name:'Protect Color 3', exact:true}).click();
+  await expectCount('1 gap to fill');
+  await click('save');
+  assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, project.paint);
+  await click('apply-gaps');
+  const expected = project.paint.slice();
+  expected[54] = 4;
+  await click('save');
+  assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, expected);
+  await click('undo');
+  await click('save');
+  assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, project.paint);
+  await click('redo');
+  await click('save');
+  assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, expected);
+});
+
+test('Fill Gaps previews and applies the rendered neighbor color for solids and distinct mixes', async t => {
+  const { page, click, projectFile } = await desktop(t);
+  const project = gapGrid(96, 54); // More than one render chunk.
+  project.mixes = { 4: [{ slot: 0, percent: 50 }, { slot: 1, percent: 50 }],
+    5: [{ slot: 2, percent: 50 }, { slot: 3, percent: 50 }] };
+  for (const recipe of Object.values(project.mixes)) project.palette.push(mixHex(project.palette, recipe));
+  project.editingContext = { color: project.palette[4] };
+  const cell = (x, y) => (96 * y + x) * 2;
+  for (let y = 0; y < 54; y++) {
+    for (const [x, slot] of [[0, 1], [32, 4], [64, 5]]) project.paint.fill(slot, cell(x, y), cell(x + 32, y));
+  }
+  const split = cell(16, 12);
+  const expected = project.paint.slice();
+  for (const [x, y] of [[16, 12], [48, 44], [80, 42]]) {
+    for (const row of [y, y + 1]) project.paint.fill(0, cell(x, row), cell(x + 2, row));
+  }
+  Object.assign(project, applyLeafEdits(project, new Map([[split, { side: 1, left: 0, right: 0 }]])));
+  await fs.writeFile(projectFile, writeProject(project));
+  await click('open');
+  await page.locator('#view').selectOption('Top');
+  await page.locator('[data-tool="Fill Gaps"]').click();
+  await page.locator('#gap-count').filter({ hasText: '3 gaps to fill' }).waitFor();
+  const layer = page.locator('#fill-highlight canvas');
+  await layer.waitFor({ state: 'visible' });
+  // The three square pinholes are horizontally separated. Sample well inside
+  // each projected outline to compare the actual lit surface before/after Apply.
+  const clips = await layer.evaluate(c => {
+    const pixels = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    const rect = c.getBoundingClientRect(), clips = [];
+    let left = -1, top = c.height, bottom = 0;
+    for (let x = 0; x < c.width; x++) {
+      let hit = false;
+      for (let y = 0; y < c.height; y++) {
+        if (!pixels[4 * (y * c.width + x) + 3]) continue;
+        hit = true; top = Math.min(top, y); bottom = Math.max(bottom, y);
+      }
+      if (hit && left < 0) left = x;
+      if (!hit && left >= 0) {
+        clips.push({ x: Math.floor(rect.x + (left + x) / 2), y: Math.floor(rect.y + (top + bottom) / 2),
+          width: 2, height: 2 });
+        left = -1; top = c.height; bottom = 0;
+      }
+    }
+    return clips;
+  });
+  assert.equal(clips.length, 3);
+  const samples = async () => {
+    const images = [];
+    for (const clip of clips) images.push(await page.screenshot({ clip }));
+    return images;
+  };
+  const preview = await samples();
+  await page.keyboard.down('Alt');
+  await layer.waitFor({ state: 'hidden' });
+  const original = await samples();
+  assert.ok(original.every((image, i) => !image.equals(preview[i])), 'every outlined polygon changes visibly');
+  await page.keyboard.up('Alt');
+  await layer.waitFor({ state: 'visible' });
+  await click('save');
+  assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, project.paint);
+  await click('apply-gaps');
+  await click('save');
+  assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, expected);
+  const applied = await samples();
+  assert.equal(new Set(applied.map(b => b.toString('base64'))).size, 3, 'three different rendered swatches');
+  assert.ok(applied.every((image, i) => image.equals(preview[i])), 'each preview interior matches its applied color');
+  await click('undo');
+  const undone = await samples();
+  assert.ok(undone.every((image, i) => image.equals(original[i])));
+});
+
+test('Fill Gaps skips geometry preparation on a single-swatch model', async t => {
+  const { page, click, projectFile } = await desktop(t);
+  const project = gapGrid();
+  project.paint.fill(2);
+  await fs.writeFile(projectFile, writeProject(project));
+  await click('open');
+  await page.evaluate(() => {
+    window.fillRequests = 0;
+    const send = Worker.prototype.postMessage;
+    Worker.prototype.postMessage = function(message, ...args) {
+      if (message.ranges || message.gapPaint) window.fillRequests++;
+      return send.call(this, message, ...args);
+    };
+  });
+  await page.getByRole('button', { name: 'Fill Gaps', exact: true }).click();
+  await page.locator('#gap-count').filter({ hasText: '0 gaps to fill' }).waitFor();
+  await page.locator('#gap-seams').check();
+  await page.locator('#gap-count').filter({ hasText: '0 gaps to fill' }).waitFor();
+  assert.equal(await page.evaluate(() => window.fillRequests), 0);
+  assert.ok(await page.locator('#apply-gaps').isDisabled());
+});
+
+test('Fill Gaps Apply preserves a jagged paint edge while fixing a pinhole and a thin seam', async t => {
+  const { page, click, projectFile } = await desktop(t);
+  const p = gapGrid(24, 14, 0.2), cell = (x, y) => 2 * (24 * y + x);
+  p.paint.fill(2, 0, cell(0, 4));
+  p.paint.fill(1, cell(0, 4), cell(0, 6));
+  p.paint[cell(8, 5) + 1] = 0; // A triangular notch connected to the broad surrounding paint.
+  const expected = p.paint.slice();
+  p.paint[cell(4, 10)] = 1;
+  p.paint.fill(1, cell(10, 10), cell(19, 10));
+  await fs.writeFile(projectFile, writeProject(p));
+  await click('open');
+  await page.locator('[data-tool="Fill Gaps"]').click();
+  await page.locator('#gap-seams').check();
+  await page.locator('#gap-count').filter({ hasText: '2 gaps to fill' }).waitFor();
+  await click('apply-gaps');
+  await click('save');
+  assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, expected);
+  await click('undo');
+  await click('save');
+  assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, p.paint);
+});
+
+test('5 mm seam scan and Apply preserve the uniform surface between two flecks', async t => {
+  const { page, click, projectFile } = await desktop(t);
+  const project = gapGrid(14, 9, 0.2);
+  project.paint[90] = project.paint[125] = 1;
+  await fs.writeFile(projectFile, writeProject(project));
+  await click('open');
+  await page.locator('[data-tool="Fill Gaps"]').click();
+  await page.locator('#gap-width').fill('5');
+  await page.locator('#gap-seams').check();
+  await page.locator('#gap-count').filter({ hasText: '2 gaps to fill' }).waitFor();
+  await click('apply-gaps');
+  await click('save');
+  assert.ok(readProject(await fs.readFile(projectFile)).paint.every(slot => slot === 0));
+  await click('undo');
+  await click('save');
+  assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, project.paint);
+});
+
+test('changing seam settings can finish a new preview while the previous scan is still running', async t => {
+  const { page, click, projectFile } = await desktop(t);
+  const project = gapGrid();
+  project.paint[54] = 1;
+  await fs.writeFile(projectFile, writeProject(project));
+  await click('open');
+  // Hold the first seam request in flight, independent of machine speed.
+  await page.evaluate(() => {
+    const send = Worker.prototype.postMessage;
+    Worker.prototype.postMessage = function(message, ...args) {
+      if (message.gapPaint && message.includeSeams) {
+        window.heldScan = true;
+        return;
+      }
+      return send.call(this, message, ...args);
+    };
+  });
+  await page.getByRole('button', { name: 'Fill Gaps', exact: true }).click();
+  await page.locator('#gap-width').fill('5');
+  await page.locator('#gap-seams').check();
+  await page.waitForFunction(() => window.heldScan);
+  const spinner = page.locator('#gap-spinner');
+  assert.ok(await spinner.isVisible());
+  await page.waitForFunction(() => document.getElementById('gap-spinner').getAnimations()
+    .some(animation => animation.playState === 'running' && animation.currentTime > 0));
+  await page.locator('#gap-seams').uncheck();
+  await page.locator('#gap-count').filter({ hasText: '1 gap to fill' }).waitFor({ timeout: 3000 });
+  assert.ok(await spinner.isHidden());
+  assert.ok(await page.locator('#apply-gaps').isEnabled());
+  assert.ok(await page.locator('#undo').isDisabled());
+  await page.evaluate(() => { window.heldScan = false; });
+  await page.locator('#gap-seams').check();
+  await page.waitForFunction(() => window.heldScan);
+  await page.keyboard.press('Escape');
+  assert.ok(await spinner.evaluate(el => el.hidden), 'cancel stops the indicator');
+});
+
+test('Include thin seams is opt-in, recomputes the preview and applies in one undoable edit', async t => {
+  const { page, click, projectFile } = await desktop(t);
+  const project = gapGrid(16, 8, 0.2);
+  project.paint.fill(2, 2 * (16 * 4 + 2), 2 * (16 * 4 + 14));
+  await fs.writeFile(projectFile, writeProject(project));
+  await click('open');
+  await page.getByRole('button', { name: 'Fill Gaps', exact: true }).click();
+  const seams = page.getByRole('checkbox', { name: 'Include thin seams' });
+  const count = n => page.locator('#gap-count').filter({ hasText: n === 1 ? '1 gap to fill' : '0 gaps to fill' }).waitFor();
+  assert.equal(await seams.isChecked(), false);
+  await count(0);
+  await seams.check();
+  await count(1);
+  await page.locator('#gap-width').fill('0.15');
+  await count(0);
+  await page.locator('#gap-width').fill('0.25');
+  await count(1);
+  await seams.uncheck();
+  await count(0);
+  assert.ok(await page.locator('#apply-gaps').isDisabled());
+  await seams.check();
+  await count(1);
+  await click('save');
+  assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, project.paint);
+  await click('apply-gaps');
+  await click('save');
+  assert.ok(readProject(await fs.readFile(projectFile)).paint.every(slot => slot === 0));
+  await click('undo');
+  await click('save');
+  assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, project.paint);
+  await click('redo');
+  await click('save');
+  assert.ok(readProject(await fs.readFile(projectFile)).paint.every(slot => slot === 0));
+});
+
+test('Band previews, cancels and paints around the model; Alt-click samples committed slots', async t => {
+  const { app, page, click, dir, projectFile } = await desktop(t);
+  const project = readSTL(fixture(), 'Bands.stl');
+  project.mixes = { 4: [{ slot: 1, percent: 50 }, { slot: 2, percent: 50 }] };
+  project.palette.push(mixHex(project.palette, project.mixes[4]));
+  await fs.writeFile(projectFile, writeProject(project));
+  await click('open');
+  await page.locator('#view').selectOption('Front');
+  await click('projection');
+  await page.keyboard.press('h');
+  const canvas = page.locator('#viewport > canvas'), box = await canvas.boundingBox();
+  const x = box.x + box.width / 2, y = box.y + box.height / 2;
+  const clip = { x: x - 18, y: y - 9, width: 36, height: 8 };
+  const mix = page.getByRole('button', { name: 'Mix 1', exact: true });
+  await mix.click();
+  const before = await page.screenshot({ clip });
+  await page.mouse.click(x, y);
+  await page.mouse.move(x, y - 10);
+  assert.ok(await page.locator('#apply-band').isDisabled());
+  assert.ok(!(await page.screenshot({ clip })).equals(before), 'moving the pointer previews the band');
+  await page.keyboard.down('Alt');
+  assert.ok((await page.screenshot({ clip })).equals(before), 'sampling reveals the underlying paint');
+  await page.keyboard.up('Alt');
+  assert.ok(!(await page.screenshot({ clip })).equals(before), 'releasing Alt restores the placement');
+  await page.keyboard.press('Escape');
+  assert.ok((await page.screenshot({ clip })).equals(before));
+  assert.ok(await page.locator('#undo').isDisabled());
+  await page.mouse.click(x, y);
+  await page.mouse.click(x, y - 10);
+  assert.ok(await page.locator('#undo').isDisabled(), 'second click only sets the bounds');
+  await click('apply-band');
+  await page.waitForFunction(() => !document.getElementById('undo').disabled);
+  await click('undo');
+  assert.ok((await page.screenshot({ clip })).equals(before));
+
+  await page.mouse.click(x, y);
+  const lower = page.locator('#band-lower'), upper = page.locator('#band-upper');
+  const picked = Number(await lower.inputValue());
+  await upper.fill(String(picked + 2));
+  assert.ok(await page.locator('#undo').isDisabled(), 'editing a bound cannot commit paint');
+  await upper.press('NumpadEnter');
+  await page.waitForFunction(() => !document.getElementById('undo').disabled);
+  await click('save');
+  const painted = readProject(await fs.readFile(projectFile));
+  const { positions } = makeSurface(painted);
+  let low = Infinity, high = -Infinity, near = false, far = false;
+  painted.paint.forEach((slot, id) => {
+    if (slot !== 4) return;
+    for (let k = id * 9; k < id * 9 + 9; k += 3) {
+      low = Math.min(low, positions[k + 2]);
+      high = Math.max(high, positions[k + 2]);
+      near ||= positions[k + 1] === -26;
+      far ||= positions[k + 1] === 26;
+    }
+  });
+  assert.ok(near && far, 'paint reaches the front and back of the slab');
+  assert.ok(Math.abs(high - low - 2) < 0.08, 'saved band measures ' + (high - low) + ' mm');
+  await click('undo');
+  await click('save');
+  assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, project.paint);
+  await click('redo');
+  await click('save');
+  const redone = readProject(await fs.readFile(projectFile));
+  assert.deepEqual(redone.paint, painted.paint);
+  assert.deepEqual(redone.splits, painted.splits);
+  const output = path.join(dir, 'Band.3mf');
+  await app.evaluate(({ dialog }, file) => {
+    dialog.showSaveDialog = async () => ({ canceled: false, filePath: file });
+  }, output);
+  await click('export');
+  const { unzipSync, strFromU8 } = await import('fflate');
+  const archive = unzipSync(await fs.readFile(output));
+  assert.match(strFromU8(archive['3D/3dmodel.model']), /paint_color="[^"]*2C/);
+  assert.ok(JSON.parse(strFromU8(archive['Metadata/project_settings.config'])).mixed_filament_definitions);
+  await click('open');
+  assert.equal(Number(await lower.inputValue()), picked);
+  assert.equal(Number(await upper.inputValue()), picked + 2);
+  assert.equal(await page.locator('#tool-title').innerText(), 'Fill Band');
+  await page.locator('#view').selectOption('Back');
+  await page.locator('[data-tool="Eraser"]').click();
+  const base = page.getByRole('button', {name: 'Color 1 (base)', exact: true});
+  await base.click();
+  await page.getByRole('button', {name: 'Mixed colors', exact: true}).click();
+  await page.keyboard.down('Alt');
+  await page.mouse.click(x, y - 3);
+  assert.equal(await mix.getAttribute('aria-pressed'), 'true');
+  await page.mouse.click(x, y + 5);
+  await page.keyboard.up('Alt');
+  assert.equal(await base.getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.locator('#tool-title').innerText(), 'Eraser');
+  assert.ok(await page.locator('#dirty').isHidden());
+  assert.ok(await page.locator('#undo').isDisabled());
+});
+
+test('Band accepts off-model bounds in either order and includes the entire underside on Apply', async t => {
+  const { page, click, projectFile } = await desktop(t);
+  const project = readSTL(fixture(), 'Raised slab.stl'), baseZ = 31.25;
+  for (let k = 2; k < project.vertices.length; k += 3) project.vertices[k] += baseZ;
+  await fs.writeFile(projectFile, writeProject(project));
+  await click('open');
+  await page.locator('[data-swatch="2"]').click();
+  await page.locator('#view').selectOption('Front');
+  await page.getByRole('button', { name: 'Fill Band', exact: true }).click();
+  const box = await page.locator('#viewport > canvas').boundingBox();
+  const x = box.x + box.width / 2, y = box.y + box.height / 2;
+  const above = box.y + box.height * 0.2, below = box.y + box.height * 0.8;
+  const lower = page.locator('#band-lower'), upper = page.locator('#band-upper');
+  const apply = page.locator('#apply-band');
+  // Perspective and orthographic views both accept empty-space picks.
+  await page.mouse.click(x, above);
+  await page.mouse.click(x, below);
+  assert.deepEqual([await lower.inputValue(), await upper.inputValue()], ['0','12']);
+  await page.keyboard.press('Escape');
+  await click('projection');
+  await page.mouse.click(x, below);
+  await page.mouse.click(x, above);
+  assert.deepEqual([await lower.inputValue(), await upper.inputValue()], ['0','12']);
+  await page.keyboard.press('Escape');
+  // Pick an interior height first, then click below the model for the base.
+  await page.mouse.click(x, y);
+  await page.mouse.click(x, below);
+  assert.equal(await lower.inputValue(), '0');
+  assert.ok(Number(await upper.inputValue()) > 0 && Number(await upper.inputValue()) < 12);
+  await page.mouse.move(x, above);
+  assert.ok(Number(await upper.inputValue()) < 12, 'hover after second click keeps the selection fixed');
+  await lower.fill('7');
+  await upper.fill('6');
+  assert.ok(await apply.isDisabled());
+  await lower.fill('0');
+  await click('save');
+  assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, project.paint);
+  await click('open');
+  assert.deepEqual([await lower.inputValue(), await upper.inputValue()], ['0','6']);
+  assert.ok(await apply.isEnabled());
+  await apply.press('Enter'); // Explicit activation of the Apply button.
+  await page.waitForFunction(() => !document.getElementById('undo').disabled);
+  await click('save');
+  const painted = readProject(await fs.readFile(projectFile)), { positions } = makeSurface(painted);
+  let underside = 0, aboveBand = 0;
+  painted.paint.forEach((slot, i) => {
+    const z = [2,5,8].map(k => positions[9*i+k] - baseZ);
+    if (Math.max(...z) === 0) underside++;
+    if (Math.max(...z) < 6 - 0.04) assert.equal(slot, 2);
+    if (Math.min(...z) > 6 + 0.04) { assert.equal(slot, 0); aboveBand++; }
+  });
+  assert.ok(underside > 0 && aboveBand > 0);
+  await click('undo');
+  await click('save');
+  assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, project.paint);
+});
+
+test('Band restores legacy Z projects and picks, previews, saves and applies model-space X and Y bands', async t => {
+  const { page, click, projectFile } = await desktop(t);
+  const project = readSTL(fixture(), 'Axis bands.stl');
+  project.editingContext = { tool: 'Height Band', bandBounds: { lower: 1, upper: 3, pending: true } };
+  await fs.writeFile(projectFile, writeProject(project));
+  await click('open');
+  const direction = page.getByRole('combobox', { name: 'Direction' });
+  const from = page.getByRole('spinbutton', { name: 'From (mm)' }), to = page.getByRole('spinbutton', { name: 'To (mm)' });
+  assert.equal(await page.locator('#tool-title').innerText(), 'Fill Band');
+  assert.equal(await page.locator('#tool-key').innerText(), 'H');
+  assert.equal(await direction.inputValue(), '2');
+  assert.deepEqual([await from.inputValue(), await to.inputValue()], ['1','3']);
+  await page.keyboard.press('Escape');
+  await page.locator('[data-swatch="2"]').click();
+  await click('projection');
+  const box = await page.locator('#viewport > canvas').boundingBox();
+  const x = box.x + box.width / 2, y = box.y + box.height / 2;
+  const clip = { x: Math.round(x) - 3, y: Math.round(y) - 3, width: 6, height: 6 };
+  for (const [axis, view, span, base] of [[0,'Back',95,-40], [1,'Left',52,-26]]) {
+    await direction.selectOption(String(axis));
+    await page.locator('#view').selectOption(view);
+    await page.keyboard.press('Escape');
+    const before = await page.screenshot({ clip });
+    // Both views reverse the selected axis on screen.
+    await page.mouse.click(box.x + 4, y);
+    assert.equal(Number(await from.inputValue()), span);
+    await page.mouse.click(box.x + box.width - 16, y);
+    assert.deepEqual([await from.inputValue(), await to.inputValue()], ['0',String(span)]);
+    await page.mouse.click(x, y);
+    const mid = Number(await from.inputValue());
+    assert.ok(Math.abs(mid - span / 2) < 1);
+    await page.mouse.click(box.x + box.width - 16, y);
+    await to.fill(String(mid + 2));
+    assert.ok(!(await page.screenshot({ clip })).equals(before), 'preview covers the center');
+    await direction.selectOption('2'); // same distances now preview along Z
+    await from.fill('20');
+    assert.ok((await page.screenshot({ clip })).equals(before), 'Z preview beyond the slab is empty');
+    await direction.selectOption(String(axis));
+    await from.fill('0');
+    await page.locator('#view').selectOption('Studio');
+    await click('save');
+    await click('open');
+    assert.equal(await direction.inputValue(), String(axis));
+    assert.equal(await to.inputValue(), String(mid + 2));
+    assert.ok(await page.locator('#undo').isDisabled());
+    await click('apply-band');
+    await click('save');
+    const painted = readProject(await fs.readFile(projectFile)), { positions } = makeSurface(painted);
+    let inside = 0, outside = 0;
+    painted.paint.forEach((slot, i) => {
+      const coordinates = [0,3,6].map(k => positions[9*i+k+axis] - base);
+      if (Math.max(...coordinates) < mid + 1.95) { assert.equal(slot, 2); inside++; }
+      if (Math.min(...coordinates) > mid + 2.05) { assert.equal(slot, 0); outside++; }
+    });
+    assert.ok(inside && outside);
+    await click('undo');
+    await click('save');
+    assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, project.paint);
+  }
+});
+
+test('swatch locks protect solid and mixed paint through previews, editing, clearing and reopening', async t => {
+  const { page, click, projectFile } = await desktop(t);
+  const project = readSTL(fixture(), 'Locked trim.stl');
+  project.mixes = { 4: [{ slot: 1, percent: 50 }, { slot: 2, percent: 50 }] };
+  project.palette.push(mixHex(project.palette, project.mixes[4]));
+  project.paint.fill(4);
+  project.paint[0] = 2;
+  project.stamps = [{ name: 'Dot', width: 1, height: 1, pixels: Uint8Array.of(1),
+    source: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII=', 'base64') }];
+  await fs.writeFile(projectFile, writeProject(project));
+  await click('open');
+  const lock = name => page.getByRole('switch', { name: 'Protect ' + name, exact: true });
+  const mix = lock('Mix 1'), solid = lock('Color 3');
+  await solid.click();
+  await mix.press('Space');
+  await click('undo');
+  assert.equal(await mix.isChecked(), false);
+  await click('redo');
+  await click('save');
+  await click('open');
+  assert.ok(await mix.isChecked() && await solid.isChecked());
+  assert.equal(await page.locator('[data-swatch="1"]').getAttribute('aria-pressed'), 'true');
+  await page.locator('#view').selectOption('Front');
+  await click('projection');
+  const box = await page.locator('#viewport > canvas').boundingBox();
+  const x = box.x + box.width / 2, y = box.y + box.height / 2;
+  for (const tool of ['Brush', 'Eraser']) {
+    await page.locator(`[data-tool="${tool}"]`).click();
+    for (const refine of [false, true]) {
+      await page.locator('#refine-edges').setChecked(refine);
+      await page.mouse.click(x, y);
+    }
+  }
+  await page.locator('[data-tool="Fill"]').click();
+  await page.locator('#protect').uncheck();
+  await page.mouse.click(x, y);
+  assert.ok(await page.locator('#fill-highlight').isHidden());
+  for (const tool of ['Text', 'Stamps']) {
+    await page.locator(`[data-tool="${tool}"]`).click();
+    if (tool === 'Text') await page.locator('#text-content').fill('Trim');
+    else await page.locator('.stamp-choice').click();
+    for (const refine of [false, true]) {
+      await page.locator('#refine-stamp').setChecked(refine);
+      await page.mouse.click(x, y);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.ok(await page.locator('#apply').isDisabled(), tool + ' skips locked paint');
+    }
+  }
+  await page.getByRole('button', { name: 'Fill Band', exact: true }).click();
+  const clip = { x: x - 18, y: y - 9, width: 36, height: 8 };
+  const before = await page.screenshot({ clip });
+  await page.mouse.click(x, y);
+  await page.mouse.move(x, y - 10);
+  await page.mouse.click(x, y - 10);
+  assert.ok(await page.locator('#apply-band').isEnabled());
+  assert.ok((await page.screenshot({ clip })).equals(before), 'locked area retains its color during band preview');
+  await click('apply-band');
+  await click('project-actions');
+  await click('clear-paint');
+  assert.ok(await page.locator('#undo').isDisabled(), 'fully locked tools leave no edit history');
+  await click('save');
+  assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, project.paint);
+  await solid.click();
+  await click('project-actions');
+  await click('clear-paint');
+  await click('save');
+  const cleared = readProject(await fs.readFile(projectFile));
+  assert.deepEqual(cleared.paint, project.paint.map(i => i === 4 ? 4 : 0));
+  await click('undo');
+  await mix.click();
+  await page.locator('[data-tool="Brush"]').click();
+  await page.mouse.click(x, y);
+  await click('save');
+  assert.ok(readProject(await fs.readFile(projectFile)).paint.includes(1), 'unlocking allows painting again');
+
+  // A single wide stroke straddles detailed trim and editable material.
+  const positions = makeSurface(project).positions;
+  project.paint = project.paint.map((_, id) => {
+    const k = id * 9;
+    return (positions[k] + positions[k + 3] + positions[k + 6]) / 3 < 7.5 ? 4 : 0;
+  });
+  project.editingContext = { lockedSlots: [4] };
+  await fs.writeFile(projectFile, writeProject(project));
+  await click('open');
+  await page.locator('#view').selectOption('Top');
+  await page.locator('#brush-size').press('End');
+  await page.mouse.move(x - 45, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 45, y, { steps: 4 });
+  await page.mouse.up();
+  await click('save');
+  const brushed = readProject(await fs.readFile(projectFile));
+  assert.ok(brushed.paint.includes(1), 'wide brush reaches unlocked paint');
+  const lockedVertices = (vertices, paint) => vertices.filter((_, k) => paint[Math.floor(k / 9)] === 4);
+  assert.deepEqual(lockedVertices(makeSurface(brushed).positions, brushed.paint),
+    lockedVertices(positions, project.paint), 'every locked trim triangle survives the crossing stroke');
+});
+
 test('Clear all paint resets every leaf to the custom base and supports one-step undo and redo', async (t) => {
   const { page, click, projectFile } = await desktop(t);
   const project = readSTL(fixture(), 'Mixed slab.stl');
@@ -54,6 +843,15 @@ test('Clear all paint resets every leaf to the custom base and supports one-step
   await page.locator('[data-tool="Text"]').click();
   await page.locator('#text-content').fill('Test');
   await page.waitForFunction(() => !document.getElementById('apply').disabled);
+  const clear = page.locator('header #clear-paint');
+  assert.ok(await clear.isHidden());
+  assert.equal(await page.locator('#painting-sidebar #clear-paint').count(), 0);
+  await page.getByRole('button', { name: 'Project', exact: true }).press('Enter');
+  assert.ok(await clear.isVisible());
+  await page.keyboard.press('Escape');
+  assert.ok(await clear.isHidden());
+  assert.ok(await page.locator('#apply').isEnabled(), 'closing Project keeps the text preview');
+  await click('project-actions');
   await click('clear-paint');
   assert.ok(await page.locator('#apply').isDisabled());
   assert.ok(await page.locator('#dirty').isVisible());
@@ -64,6 +862,7 @@ test('Clear all paint resets every leaf to the custom base and supports one-step
   assert.deepEqual(cleared.palette, project.palette);
   assert.deepEqual(cleared.mixes, project.mixes);
   assert.deepEqual(cleared.stamps, project.stamps);
+  await click('project-actions');
   await click('clear-paint');
   assert.ok(await page.locator('#dirty').isHidden(), 'clearing an already blank model preserves the save point');
   await click('undo');
@@ -74,6 +873,43 @@ test('Clear all paint resets every leaf to the custom base and supports one-step
   await click('open');
   await click('save');
   assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, cleared.paint);
+});
+
+test('new STLs inherit the active palette and selection, while saved projects restore their own', async t => {
+  const { app, page, click, dir, projectFile } = await desktop(t);
+  const donor = readSTL(fixture(), 'Donor.stl');
+  donor.palette[0] = '#223344';
+  donor.mixes = {4: [{slot:0, percent:33}, {slot:2, percent:67}]};
+  donor.palette.push(mixHex(donor.palette, donor.mixes[4]));
+  donor.paint.fill(4);
+  const donorPath = path.join(dir, 'Donor.stlp');
+  await fs.writeFile(donorPath, writeProject(donor));
+  const openFile = async file => {
+    await app.evaluate((_, file) => { global.openFixture = file; }, file);
+    await click('open');
+  };
+  await openFile(donorPath);
+  await click('add-color');
+  const activeColors = await page.locator('#palette .palette-hex').allTextContents();
+  const expectedPalette = [...donor.palette, activeColors.at(-1)];
+  await page.getByRole('button', {name:'Mix 1', exact:true}).click();
+  await app.evaluate(({ dialog }) => { dialog.showMessageBox = async () => ({ response:1 }); });
+  for (const name of ['First.stl', 'Second.STL']) {
+    const meshPath = path.join(dir, name);
+    await fs.writeFile(meshPath, fixture());
+    await openFile(meshPath);
+    assert.equal(await page.getByRole('button', {name:'Mix 1', exact:true}).getAttribute('aria-pressed'), 'true');
+    assert.ok(await page.locator('#dirty').isHidden());
+    await click('save');
+    const imported = readProject(await fs.readFile(projectFile));
+    assert.deepEqual(imported.palette, expectedPalette);
+    assert.deepEqual(imported.mixes, donor.mixes);
+    assert.equal(imported.editingContext.color, donor.palette[4]);
+    assert.ok(imported.paint.every(slot => slot === 0));
+  }
+  await openFile(donorPath);
+  assert.equal(await page.locator('#palette .palette-hex').count(), donor.palette.length - 1);
+  assert.equal(await page.getByRole('button', {name:'Color 2', exact:true}).getAttribute('aria-pressed'), 'true');
 });
 
 test('a saved palette can be loaded into a painted project and undone in one step', async t => {
@@ -142,6 +978,33 @@ test('a saved palette can be loaded into a painted project and undone in one ste
   await click('save-palette');
   assert.ok(await page.locator('#dirty').isHidden());
   assert.equal(await fs.readFile(palettePath, 'utf8'), '{}');
+});
+
+test('Save As updates the viewport heading to the new filename and keeps it on reopen', async t => {
+  const { app, page, dir, click } = await desktop(t);
+  await click('save');
+  const variant = path.join(dir, 'secretaire.v2.STLP');
+  await app.evaluate(({ dialog }, file) => {
+    dialog.showSaveDialog = async () => ({ canceled: false, filePath: file });
+    global.openFixture = file;
+  }, variant);
+  await click('save-as');
+  async function checkTitle() {
+    assert.equal(await page.locator('#docname').innerText(), path.basename(variant));
+    assert.equal(await page.locator('#model-name').innerText(), 'secretaire.v2');
+  }
+  await checkTitle();
+  await click('open');
+  await checkTitle();
+  await app.evaluate(({ dialog }) => { dialog.showSaveDialog = async () => ({ canceled: true }); });
+  await click('save-as');
+  await checkTitle();
+  await app.evaluate(({ dialog }, file) => {
+    dialog.showSaveDialog = async () => ({ canceled: false, filePath: file });
+  }, path.join(dir, 'missing-folder', 'failed.stlp'));
+  await click('save-as');
+  await page.locator('#notice[open] button').click();
+  await checkTitle();
 });
 
 test('Save, Save As and Export show the matching file type and action', async (t) => {
@@ -285,6 +1148,40 @@ test('mixed colors support editable ratios, independent panels, stamp matching a
   assert.match(strFromU8(archive['3D/3dmodel.model']), /paint_color="[^"]*2C/);
 });
 
+test('number keys select the first ten sidebar swatches and leave text entry alone', async t => {
+  const { page, click, projectFile } = await desktop(t);
+  const active = page.locator('[data-swatch][aria-pressed=true]');
+  const original = await active.getAttribute('data-swatch');
+  await page.locator('#viewport > canvas').focus();
+  await page.keyboard.press('0');
+  assert.equal(await active.getAttribute('data-swatch'), original);
+  const project = gapGrid();
+  const parts = [{slot: 1, percent: 50}, {slot: 2, percent: 50}];
+  project.mixes = {4: parts};
+  project.palette.push(mixHex(project.palette, parts), '#121212', '#343434', '#565656', '#787878', '#A0A0A0');
+  await fs.writeFile(projectFile, writeProject(project));
+  await click('open');
+  await page.locator('[data-tool="Fill"]').click();
+  await page.locator('[aria-controls="mixed-colors"]').click();
+  const expected = [0,1,2,3,5,6,7,8,9,4];
+  for (const [i, key] of [...'1234567890'].entries()) {
+    await page.keyboard.press(key);
+    assert.equal(await active.getAttribute('data-swatch'), String(expected[i]));
+    assert.equal(await active.locator('kbd').innerText(), key);
+  }
+  assert.ok(await page.locator('#mixed-colors').isVisible());
+  assert.equal(await page.locator('#tool-title').innerText(), 'Fill');
+  await click('add-color');
+  await page.keyboard.press('0');
+  assert.equal(await active.getAttribute('aria-label'), 'Color 10');
+  assert.equal(await page.locator('[data-swatch="4"]').getAttribute('aria-keyshortcuts'), null);
+  await page.locator('[data-tool="Text"]').click();
+  await page.locator('#text-content').fill('');
+  await page.locator('#text-content').pressSequentially('1230');
+  assert.equal(await page.locator('#text-content').inputValue(), '1230');
+  assert.equal(await active.getAttribute('aria-label'), 'Color 10');
+});
+
 test('scrolling mixed-color rows contain the full recipe at default and minimum sidebar widths', async (t) => {
   const { page, click, projectFile } = await desktop(t);
   const project = readSTL(fixture(), 'Mixed rows.stl');
@@ -326,6 +1223,10 @@ test('scrolling mixed-color rows contain the full recipe at default and minimum 
   }
   await list.getByRole('button',{name:'Edit Mix 7',exact:true}).click();
   assert.equal(await page.locator('#mix-count').inputValue(), '3');
+  assert.match(await page.locator('#mix-suggestions [aria-pressed=true]').getAttribute('title'), /Color 1 · 34%/);
+  assert.equal(await page.locator('#mix-suggestions').getByRole('button', {
+    name: /^Color 1 · \d+% \+ Color 2 · \d+% \+ Color 3 · \d+% · #/,
+  }).count(), 1);
 });
 
 test('mix suggestions cover each physical pair and trio and only save on confirmation', async (t) => {
@@ -345,7 +1246,7 @@ test('mix suggestions cover each physical pair and trio and only save on confirm
   }));
   const expected = [];
   for (const ids of [[1,2],[1,3],[1,4],[2,3],[2,4],[3,4],[1,2,3],[1,2,4],[1,3,4],[2,3,4]]) {
-    const ratios = ids.length === 2 ? [[50,50],[33,67],[67,33]] : [[33,33,34],[33,34,33],[34,33,33]];
+    const ratios = ids.length === 2 ? [[50,50],[33,67],[67,33]] : [[33,33,34]];
     for (const ratio of ratios) expected.push(ids.map((id,i) => `Color ${id} · ${ratio[i]}%`).join(' + '));
   }
   assert.deepEqual(buttons.map(b => b.recipe).sort(), expected.sort());
@@ -356,11 +1257,11 @@ test('mix suggestions cover each physical pair and trio and only save on confirm
   assert.deepEqual(await shares.evaluateAll(nodes => nodes.map(n => n.valueAsNumber)), [33,67]);
   await shares.first().fill('45');
   assert.equal(await gallery.locator('[aria-pressed=true]').count(), 0);
-  const trio = gallery.getByRole('button',{name:/^Color 2 · 33% \+ Color 3 · 34% \+ Color 4 · 33% · #/});
+  const trio = gallery.getByRole('button',{name:/^Color 2 · 33% \+ Color 3 · 33% \+ Color 4 · 34% · #/});
   await trio.focus();
   await trio.press('Enter');
   assert.equal(await page.locator('#mix-count').inputValue(), '3');
-  assert.deepEqual(await shares.evaluateAll(nodes => nodes.map(n => n.valueAsNumber)), [33,34,33]);
+  assert.deepEqual(await shares.evaluateAll(nodes => nodes.map(n => n.valueAsNumber)), [33,33,34]);
   await pair.click();
   assert.equal(await page.locator('#mix-count').inputValue(), '2');
   await trio.click();
@@ -373,10 +1274,10 @@ test('mix suggestions cover each physical pair and trio and only save on confirm
   await click('confirm-mix');
   await click('save');
   const saved = readProject(await fs.readFile(projectFile));
-  assert.deepEqual(saved.mixes[4], [{slot:1,percent:33},{slot:2,percent:34},{slot:3,percent:33}]);
+  assert.deepEqual(saved.mixes[4], [{slot:1,percent:33},{slot:2,percent:33},{slot:3,percent:34}]);
   await click('add-color');
   await click('add-mix');
-  assert.equal(await swatches.count(), 60); // Five physical filaments, ten pairs and ten trios.
+  assert.equal(await swatches.count(), 40); // Ten pairs with three ratios each, plus ten trios.
   assert.ok(await gallery.getByRole('button', {name:title + ' (already in palette)',exact:true}).isDisabled());
   await page.locator('#mix-editor button[value=cancel]').click();
   await page.getByRole('button',{name:'Edit Mix 1',exact:true}).click();
@@ -391,13 +1292,14 @@ test('large palettes show at most 90 mix suggestions and custom recipes remain e
   const cancel = page.locator('#mix-editor button[value=cancel]');
   for (let count = 4; count <= 16; count++) {
     if (count > 4) await click('add-color');
-    if (![4,5,6,16].includes(count)) continue;
+    if (![4,5,6,7,16].includes(count)) continue;
     await click('add-mix');
     const names = await swatches.evaluateAll(buttons => buttons.map(b => b.title));
-    assert.equal(names.length, Math.min(90, (count ** 3 - count) / 2));
+    const pairs = count * (count - 1) / 2, trios = pairs * (count - 2) / 3;
+    assert.equal(names.length, Math.min(90, 3 * pairs + trios));
     assert.equal(new Set(names).size, names.length);
-    if (count >= 6) {
-      assert.equal(names.filter(name => name.split(' + ').length === 2).length, 45);
+    if (names.length === 90) {
+      assert.equal(names.filter(name => name.split(' + ').length === 3).length, Math.min(45, trios));
       assert.ok(names.some(name => name.includes('Color ' + count + ' ·')));
     }
     if (count < 16) await cancel.click();
@@ -493,7 +1395,7 @@ test('reopening after a first save into the selected project loads the new conte
   const current = await page.locator('#model-name').innerText();
   await click('add-color');
   await click('open');
-  assert.equal(await page.locator('#model-name').innerText(), current);
+  assert.equal(await page.locator('#model-name').innerText(), path.parse(projectFile).name);
   assert.equal(await page.locator('.swatch-row').count(), 5);
   assert.ok(await page.locator('#dirty').isHidden());
   const saved = await fs.readFile(projectFile);
@@ -517,7 +1419,7 @@ test('reopening a different same-named project saves edits to the original and s
   await fs.writeFile(other, writeProject(readSTL(fixture(), 'Other slab.stl')));
   await app.evaluate((_, file) => { global.openFixture = file; }, other);
   await click('open');
-  assert.equal(await page.locator('#model-name').innerText(), 'Other slab');
+  assert.equal(await page.locator('#model-name').innerText(), path.parse(other).name);
   assert.equal(readProject(await fs.readFile(projectFile)).palette.length, 5);
   await click('add-color');
   await click('add-color');
@@ -543,7 +1445,7 @@ test('reopening honors canceled saves, Cancel, and Discard', async (t) => {
   assert.ok(await page.locator('#dirty').isVisible());
   await app.evaluate(({ dialog }) => { dialog.showMessageBox = async () => ({ response: 1 }); });
   await click('open');
-  assert.equal(await page.locator('#model-name').innerText(), 'Saved slab');
+  assert.equal(await page.locator('#model-name').innerText(), path.parse(projectFile).name);
   assert.ok(await page.locator('#dirty').isHidden());
   assert.ok((await fs.readFile(projectFile)).equals(original));
 });
@@ -603,19 +1505,21 @@ test('Fill hover and click agree across a painted bevel as angle and protection 
   }
   const brushSize = await page.locator('#brush-size').inputValue();
   await page.locator('#protect').focus();
+  await angle(28);
   await page.keyboard.press('[');
-  assert.equal(await page.locator('#angle-value').innerText(), '30°');
+  assert.equal(await page.locator('#angle-value').innerText(), '27°');
+  await checkBevel(true);
   await page.keyboard.press('[');
-  assert.equal(await page.locator('#angle').inputValue(), '25');
+  assert.equal(await page.locator('#angle').inputValue(), '26');
   await checkBevel(false);
   await page.keyboard.press(']');
-  assert.equal(await page.locator('#angle-value').innerText(), '30°');
+  assert.equal(await page.locator('#angle-value').innerText(), '27°');
   await checkBevel(true);
-  await angle(3);
+  await angle(1);
   await page.keyboard.press('[');
   await page.keyboard.press('[');
   assert.equal(await page.locator('#angle-value').innerText(), '0°');
-  await angle(178);
+  await angle(179);
   await page.keyboard.press(']');
   await page.keyboard.press(']');
   assert.equal(await page.locator('#angle-value').innerText(), '180°');
@@ -631,6 +1535,37 @@ test('Fill hover and click agree across a painted bevel as angle and protection 
   await click('undo');
   await click('save');
   assert.deepEqual(readProject(await fs.readFile(projectFile)).paint, model.paint);
+});
+
+test('holding a Fill bracket steps once, pauses, and repeats until release', async t => {
+  const { page } = await desktop(t);
+  await page.locator('[data-tool="Fill"]').click();
+  await page.clock.install({ time: new Date('2030-01-01T12:00:00Z') });
+  await page.clock.pauseAt(new Date('2030-01-01T12:00:01Z'));
+  const angle = page.locator('#angle');
+  await page.keyboard.down(']');
+  assert.equal(await angle.inputValue(), '36');
+  await page.keyboard.down(']'); // Simulate a native repeated keydown.
+  await page.clock.runFor(399);
+  assert.equal(await angle.inputValue(), '36');
+  await page.clock.runFor(1);
+  assert.equal(await angle.inputValue(), '37');
+  await page.clock.runFor(375);
+  assert.equal(await angle.inputValue(), '40');
+  await page.keyboard.up(']');
+  await page.clock.runFor(500);
+  assert.equal(await angle.inputValue(), '40');
+  await page.keyboard.down('[');
+  assert.equal(await angle.inputValue(), '39');
+  await page.clock.runFor(650);
+  assert.equal(await angle.inputValue(), '36');
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  await page.clock.runFor(500);
+  assert.equal(await angle.inputValue(), '36');
+  await page.keyboard.up('[');
+  await page.keyboard.press('[');
+  await page.clock.runFor(500);
+  assert.equal(await angle.inputValue(), '35');
 });
 
 test('large models warn above one million, open through 1.5 million, and reject larger files', async (t) => {
@@ -680,6 +1615,7 @@ test('large models warn above one million, open through 1.5 million, and reject 
   const saved = readProject(await fs.readFile(projectFile));
   assert.equal(saved.depth.length, 1_500_000);
   assert.ok(saved.paint.length <= 1_600_000);
+  await page.getByRole('button', {name:'Color 2', exact:true}).click();
   await page.locator('#view').selectOption('Top');
   await page.evaluate(() => {
     const post = Worker.prototype.postMessage;

@@ -57,8 +57,6 @@ export function validSplits(splits, roots, leaves) {
   return pos === splits.length;
 }
 
-// Replace only the edited leaves. Everything else retains its original split
-// order and palette assignment. The previous arrays remain intact for undo.
 export function surfaceRanges(project) {
   const ranges = [];
   let face = 0, cell = 0, node = 0;
@@ -81,25 +79,88 @@ export function surfaceRanges(project) {
   return ranges;
 }
 
+// Walk adaptive trees in the touched chunks. Returning a uniform slot even
+// from an untouched child lets a changed ancestor collapse in a legacy tree.
+// A separate root starts at every cell of the original four-way paint grid.
+function siblingMerges(project, ranges, ids, edits) {
+  const merges = [];
+  if (!project.splits) return merges;
+  let edit = 0, cell, node;
+  function visit() {
+    const startNode = node++, startCell = cell;
+    if (!project.splits[startNode]) {
+      cell++;
+      if (ids[edit] !== startCell) return project.paint[startCell];
+      edit++;
+      const tree = edits?.get(startCell) ?? project.paint[startCell];
+      // The refiner already reduces uniform branches in its replacement trees.
+      return typeof tree === 'number' ? tree : -1;
+    }
+    const firstEdit = edit, firstMerge = merges.length;
+    const left = visit(), right = visit();
+    if (left < 0 || left !== right) return -1;
+    if (edit !== firstEdit) {
+      merges.length = firstMerge;
+      merges.push({node: startNode, endNode: node, cell: startCell, endCell: cell, color: left});
+    }
+    return left;
+  }
+  for (const range of ranges) {
+    if (edit === ids.length) break;
+    if (ids[edit] >= range.endCell) continue;
+    if (range.endNode - range.node === range.endCell - range.cell) {
+      while (ids[edit] < range.endCell) edit++;
+      continue;
+    }
+    node = range.node;
+    cell = range.cell;
+    while (ids[edit] < range.endCell) visit();
+  }
+  return merges;
+}
+
+export function mergeRepaintedCells(project, ranges, paintedIds) {
+  if (!project.splits) return null;
+  let ids = paintedIds;
+  for (let i = 1; i < ids.length; i++) {
+    if (ids[i] < ids[i - 1]) {
+      ids = Uint32Array.from(ids).sort();
+      break;
+    }
+  }
+  const merges = siblingMerges(project, ranges, ids);
+  return merges.length ? rewritePaint(project, ranges, ids, null, merges) : null;
+}
+
 export function applyLeafEdits(project, edits, ranges = surfaceRanges(project)) {
-  const ids = [...edits.keys()].sort((a, b) => a - b);
+  const ids = Uint32Array.from(edits.keys()).sort();
+  return rewritePaint(project, ranges, ids, edits, siblingMerges(project, ranges, ids, edits));
+}
+
+function rewritePaint(project, ranges, ids, edits, merges) {
   function extra(tree) {
     return typeof tree === 'number' ? 0 : 1 + extra(tree.left) + extra(tree.right);
   }
-  const expanded = [];
+  const updatedRanges = [];
   const changed = new Set();
-  let edit = 0, growth = 0;
+  let edit = 0, merge = 0, growth = 0;
   for (const [i, range] of ranges.entries()) {
     const cell = range.cell + growth, node = range.node + growth * 2;
+    if (ids[edit] < range.endCell) changed.add(i);
     while (edit < ids.length && ids[edit] < range.endCell) {
-      changed.add(i);
-      growth += extra(edits.get(ids[edit++]));
+      if (edits) growth += extra(edits.get(ids[edit]));
+      edit++;
     }
-    expanded.push({ ...range, cell, node, endCell: range.endCell + growth, endNode: range.endNode + growth * 2 });
+    while (merge < merges.length && merges[merge].cell < range.endCell) {
+      const removed = merges[merge++];
+      growth -= removed.endCell - removed.cell - 1;
+    }
+    updatedRanges.push({ ...range, cell, node, endCell: range.endCell + growth, endNode: range.endNode + growth * 2 });
   }
   const paint = new Uint8Array(project.paint.length + growth);
   const old = project.splits;
-  const splits = new Uint8Array((old?.length ?? project.paint.length) + 2 * growth);
+  const nodeCount = (old?.length ?? project.paint.length) + 2 * growth;
+  const splits = nodeCount > paint.length ? new Uint8Array(nodeCount) : undefined;
   let outCell = 0, outNode = 0;
   function emit(tree) {
     if (typeof tree === 'number') {
@@ -111,19 +172,26 @@ export function applyLeafEdits(project, edits, ranges = surfaceRanges(project)) 
       emit(tree.right);
     }
   }
+  merge = 0;
   for (const [i, range] of ranges.entries()) {
-    outCell = expanded[i].cell;
-    outNode = expanded[i].node;
+    outCell = updatedRanges[i].cell;
+    outNode = updatedRanges[i].node;
     if (!changed.has(i)) {
       paint.set(project.paint.subarray(range.cell, range.endCell), outCell);
-      if (old) splits.set(old.subarray(range.node, range.endNode), outNode);
+      if (old && splits) splits.set(old.subarray(range.node, range.endNode), outNode);
       continue;
     }
     let cell = range.cell;
     for (let node = range.node; node < range.endNode; node++) {
-      if (old?.[node]) splits[outNode++] = old[node];
-      else { emit(edits.get(cell) ?? project.paint[cell]); cell++; }
+      const collapsed = merges[merge];
+      if (collapsed?.node === node) {
+        emit(collapsed.color);
+        cell = collapsed.endCell;
+        node = collapsed.endNode - 1;
+        merge++;
+      } else if (old?.[node]) splits[outNode++] = old[node];
+      else { emit(edits?.get(cell) ?? project.paint[cell]); cell++; }
     }
   }
-  return { paint, splits, ranges: expanded, changed };
+  return { paint, splits, ranges: updatedRanges, changed };
 }

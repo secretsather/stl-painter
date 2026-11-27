@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { unzipSync, strFromU8 } from 'fflate';
-import { PerspectiveCamera, Vector3 } from 'three';
+import { PerspectiveCamera, Triangle, Vector3 } from 'three';
 import { readProject } from '../src/files.js';
 import { bounds, makeSurface } from '../src/mesh.js';
 import { fixture } from './fixture.mjs';
@@ -532,7 +532,7 @@ try {
     return final;
   }
   const preview = await verifyPlacementDrag(clip, point(30, -8));
-  await click('apply');
+  await page.keyboard.press('NumpadEnter');
   assert.ok(await outline.isHidden());
   await page.waitForTimeout(120);
   const applied = await page.screenshot({ clip });
@@ -695,7 +695,7 @@ try {
   assert.equal(await windowTitle(), projectTitle);
   assert.equal(await page.locator('#docname').textContent(), path.basename(file));
   assert.equal(await page.locator('#model-kind').textContent(), 'PAINTER PROJECT');
-  assert.equal(await page.locator('#model-name').textContent(), original.name);
+  assert.equal(await page.locator('#model-name').textContent(), path.parse(file).name);
   await app.evaluate(() => {
     global.testDialogs.open = global.testDialogs.file;
   });
@@ -706,7 +706,19 @@ try {
   assert.equal(await page.locator('.swatch-row button[aria-pressed]').nth(4).getAttribute('aria-pressed'), 'true');
   await page.mouse.click(cx, cy);
   const firstStroke = await save();
-  assert.ok(firstStroke.paint.filter((slot) => slot === 0).length > original.paint.filter((slot) => slot === 0).length,
+  function erasedArea(project) {
+    const { positions } = makeSurface(project), triangle = new Triangle();
+    let area = 0;
+    project.paint.forEach((slot, id) => {
+      if (slot !== 0) return;
+      triangle.a.fromArray(positions, 9 * id);
+      triangle.b.fromArray(positions, 9 * id + 3);
+      triangle.c.fromArray(positions, 9 * id + 6);
+      area += triangle.getArea();
+    });
+    return area;
+  }
+  assert.ok(erasedArea(firstStroke) > erasedArea(original) + 1e-6,
     'the first stroke after restarting erases the saved color');
   await click('undo');
   await expectSavedProject(original);
@@ -894,6 +906,7 @@ try {
   await waitIdle();
   assert.equal((await save()).palette.length, resumed.palette.length + 1);
   assert.equal(await windowTitle(), projectTitle, 'unsuccessful Save As keeps the project name');
+  assert.equal(await page.locator('#model-name').textContent(), path.parse(file).name);
   const variant = path.join(dir, 'Five colors.v2.STLP');
   await app.evaluate((_, dest) => {
     global.testDialogs.file = dest;

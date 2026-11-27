@@ -15,17 +15,21 @@ export class FillJobs {
     this.worker.onmessage = ({ data }) => {
       const job = this.pending.get(data.id);
       if (!job) return;
+      if (data.progress !== undefined) {
+        job.onProgress?.(data.progress);
+        return;
+      }
       this.pending.delete(data.id);
       if (data.error) job.reject(Error(data.error));
       else job.resolve(data.value);
     };
     this.worker.onerror = e => this.close(e.message);
   }
-  request(message, transfers = []) {
+  request(message, transfers = [], onProgress) {
     if (this.closed) return Promise.reject(Error(this.closed));
     const id = ++this.sequence;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, { resolve, reject, onProgress });
       this.worker.postMessage({ id, ...message }, transfers);
     });
   }
@@ -44,11 +48,21 @@ export class FillJobs {
     return this.request({ mesh, ranges: view.ranges, changes, owners: view.surface.owners,
       normals: mesh && view.surface.normals }, changes.flatMap(c => c.splits ? [c.splits.buffer] : []));
   }
-  region(paint, revision, seed, angle, protect) {
+  region(paint, revision, seed, angle, protect, lockedSlots) {
     const changed = this.paint !== paint || this.revision !== revision;
     this.paint = paint;
     this.revision = revision;
-    return this.request({ seed, angle, protect, paint: changed ? paint : undefined });
+    return this.request({ seed, angle, protect, lockedSlots, paint: changed ? paint : undefined });
+  }
+  gaps(view, project, threshold, includeSeams, onProgress) {
+    let positions;
+    if (this.gapVersion !== view.chunkVersion) {
+      positions = new Float32Array(project.paint.length * 9);
+      for (const { range, data } of view.chunks) positions.set(data.positions, range.cell * 9);
+      this.gapVersion = view.chunkVersion;
+    }
+    return this.request({ threshold, includeSeams, positions, gapPaint: project.paint, lockedSlots: project.lockedSlots },
+      positions ? [positions.buffer] : [], onProgress);
   }
   close(reason = 'Project changed.') {
     this.closed = reason;

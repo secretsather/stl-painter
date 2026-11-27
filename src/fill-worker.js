@@ -1,11 +1,13 @@
 import { FillIndex } from './fill-index.js';
 import { flood } from './mesh.js';
+import { findGaps } from './fill-gaps.js';
 
-let index, surface = {}, paint;
+let index, surface = {}, paint, positions;
 self.onmessage = ({ data }) => {
   const { id, mesh, ranges, changes } = data;
   try {
     if (ranges) {
+      positions = undefined;
       if (mesh) {
         index = new FillIndex(mesh, ranges);
         surface.normals = data.normals;
@@ -13,10 +15,15 @@ self.onmessage = ({ data }) => {
       surface.owners = data.owners;
       surface.graph = index.update(ranges, changes);
       self.postMessage({ id });
+    } else if (data.gapPaint) {
+      positions = data.positions ?? positions;
+      const result = findGaps(data.gapPaint, data.lockedSlots, surface.graph, positions, data.threshold,
+        data.includeSeams, progress => self.postMessage({ id, progress }));
+      self.postMessage({ id, value: result }, [result.targets.buffer]);
     } else {
       if (data.paint) paint = data.paint;
       const mask = new Uint8Array(paint.length);
-      flood({ paint }, surface, data.seed, data.angle, data.protect, mask);
+      flood({ paint, lockedSlots: data.lockedSlots }, surface, data.seed, data.angle, data.protect, mask);
       self.postMessage({ id, value: mask }, [mask.buffer]);
     }
   } catch (error) {

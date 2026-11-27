@@ -46,20 +46,28 @@ export class FillPreview {
 export function drawFillPreview(canvas, view, mask, paint, selected, hex) {
   canvas.parentElement.hidden = !mask;
   if (!mask) return;
+  drawSurfaceHighlight(canvas, view, id => id >= 0 && mask[id] && paint[id] !== selected ? 0 : 255, [hex]);
+}
+
+export function drawSurfaceHighlight(canvas, view, slotAt, palette, outlineOnly = false) {
   const { w, h } = view;
   if (canvas.width !== w) canvas.width = w;
   if (canvas.height !== h) canvas.height = h;
   const context = canvas.getContext('2d');
   const pixels = context.createImageData(w, h), ids = view.picks().ids;
   const rgba = pixels.data;
-  const rgb = parseInt(hex.slice(1), 16), r = rgb >> 16, g = rgb >> 8 & 255, b = rgb & 255;
-  const outline = 0.2126 * r + 0.7152 * g + 0.0722 * b > 140 ? 35 : 250;
-  const affected = id => id >= 0 && mask[id] && paint[id] !== selected;
+  const colors = palette.map(hex => {
+    const rgb = parseInt(hex.slice(1), 16), r = rgb >> 16, g = rgb >> 8 & 255, b = rgb & 255;
+    return [r, g, b, 0.2126 * r + 0.7152 * g + 0.0722 * b > 140 ? 35 : 250];
+  });
   for (let y = 0, i = 0; y < h; y++) {
     for (let x = 0; x < w; x++, i++) {
-      if (!affected(ids[i])) continue;
-      const edge = !x || !y || x === w - 1 || y === h - 1 || !affected(ids[i - 1]) ||
-        !affected(ids[i + 1]) || !affected(ids[i - w]) || !affected(ids[i + w]);
+      const slot = slotAt(ids[i]);
+      if (slot === 255) continue;
+      const [r, g, b, outline] = colors[slot];
+      const edge = !x || !y || x === w - 1 || y === h - 1 || slotAt(ids[i - 1]) !== slot ||
+        slotAt(ids[i + 1]) !== slot || slotAt(ids[i - w]) !== slot || slotAt(ids[i + w]) !== slot;
+      if (outlineOnly && !edge) continue;
       const offset = i * 4;
       rgba[offset] = edge ? outline : r;
       rgba[offset + 1] = edge ? outline : g;

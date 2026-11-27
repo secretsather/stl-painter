@@ -3,9 +3,12 @@ import {
   FolderOpen,
   Save,
   Ellipsis,
+  ChevronDown,
   Box,
   Paintbrush,
   PaintBucket,
+  Layers,
+  Lasso,
   Eraser,
   Stamp,
   Type,
@@ -18,15 +21,20 @@ import {
   Plus,
   Scan,
   Check,
+  Lock,
+  LockOpen,
   X,
 } from 'lucide';
 import { Viewport } from './viewport.js';
 import { setupSidebar } from './sidebar.js';
 import { setupImportPreview } from './import-preview.js';
 import { RefinedStroke } from './refined-stroke.js';
-import { applyLeafEdits } from './paint-tree.js';
-import { sampleProject, binarySTLFaceCount, checkFaceLimit, LARGE_MODEL_FACES } from './mesh.js';
-import { FillPreview, drawFillPreview } from './fill-preview.js';
+import { applyLeafEdits, mergeRepaintedCells } from './paint-tree.js';
+import { bandEdits } from './band.js';
+import { lassoFootprint, lassoSegments } from './lasso.js';
+import { sampleProject, binarySTLFaceCount, checkFaceLimit, LARGE_MODEL_FACES, MAX_CELLS } from './mesh.js';
+import { FillPreview, drawFillPreview, drawSurfaceHighlight } from './fill-preview.js';
+import { hasMultipleSwatches } from './fill-gaps.js';
 import { modelJob, FillJobs } from './model-job.js';
 import { textArtwork, loadFontFamilies } from './text-artwork.js';
 import { setupColorLimit } from './color-limit.js';
@@ -41,9 +49,12 @@ const icons = {
   FolderOpen,
   Save,
   Ellipsis,
+  ChevronDown,
   Box,
   Paintbrush,
   PaintBucket,
+  Layers,
+  Lasso,
   Eraser,
   Stamp,
   Type,
@@ -59,6 +70,19 @@ const icons = {
   X,
 };
 createIcons({ icons });
+const toolByKey = new Map();
+for (const button of all('.toolrail [data-tool]')) {
+  const key = button.getAttribute('aria-keyshortcuts') || button.dataset.tool[0];
+  button.setAttribute('aria-keyshortcuts', key);
+  toolByKey.set(key.toLowerCase(), button.dataset.tool);
+  const item = document.createElement('span'), cap = document.createElement('kbd');
+  item.className = 'shortcut';
+  cap.textContent = key;
+  const icon = button.querySelector('svg').cloneNode(true);
+  icon.setAttribute('aria-hidden', 'true');
+  item.append(icon, cap, button.getAttribute('aria-label'));
+  $('tool-shortcuts').append(item);
+}
 setupSidebar($('sidebar-divider'));
 const importPreview = setupImportPreview($('mapping-preview'), $('fit-artwork'));
 const files = window.painterFiles;
@@ -66,6 +90,7 @@ let p,
   v,
   tool = 'Brush',
   pickingFace = false,
+  samplingColor = false,
   selected = 1,
   stampIndex = -1,
   anchor = null,
@@ -103,10 +128,11 @@ function error(err) {
   );
   if (!$('notice').open) $('notice').showModal();
 }
-function setDocumentName(name) {
+function setDocumentName(name, isProject) {
   const header = $('docname');
   header.textContent = name;
   header.title = name;
+  $('model-name').textContent = isProject ? name.replace(/\.stlp$/i, '') || name : name;
 }
 let nativeDirty;
 function state() {
@@ -133,7 +159,8 @@ function record(label, change, weight = 0, scope = 'paint') {
   state();
   notify(label);
   if (scope === 'paint') paintRevision++;
-  if (scope !== 'library') refreshColorLimit();
+  if (scope === 'paint' || scope === 'palette') refreshColorLimit();
+  if (tool === 'Fill Gaps') refreshGaps();
 }
 let textKey, textMask, fontList;
 // Rasterize physical lettering at a stable resolution. Its projected size can
@@ -169,6 +196,7 @@ function hasPreview() {
   return !!(refinedPreview?.edits.size || preview.size);
 }
 function clearPreview() {
+  cancelLasso();
   clearFillHover();
   $('stamp-outline').hidden = true;
   if (refinedPreview) {
@@ -184,7 +212,7 @@ function updatePreview() {
   cancelAnimationFrame(previewFrame);
   previewFrame = 0;
   clearPreview();
-  const artwork = armed && currentArtwork();
+  const artwork = !samplingColor && armed && currentArtwork();
   if (!artwork) {
     $('apply').disabled = true;
     return;
@@ -228,70 +256,86 @@ function updatePreview() {
   $('apply').disabled = quickPreview || !hasPreview();
 }
 function schedulePreview() {
-  if (!v || !p || !placingArtwork() || !armed || previewFrame) return;
+  if (!v || !p || samplingColor || !placingArtwork() || !armed || previewFrame) return;
   previewFrame = requestAnimationFrame(updatePreview);
 }
 function setColor(id, c) {
-  if (p.paint[id] === c) return;
+  if (p.paint[id] === c || p.lockedSlots.has(p.paint[id])) return;
   if (!stroke.old.has(id)) stroke.old.set(id, p.paint[id]);
   p.paint[id] = c;
   v.color(id, c);
 }
 function finishStroke() {
   if (!stroke) return;
-  if (stroke.refiner) {
-    const { refiner } = stroke;
-    if (refiner.limited) stroke.label += ' (detail limit reached)';
-    refiner.dispose();
-    const edits = refiner.edits;
-    if ([...edits.values()].some((tree) => typeof tree !== 'number')) {
-      const before = { paint: p.paint, splits: p.splits, ranges: v.ranges };
-      const after = applyLeafEdits(p, edits, v.ranges);
-      const change = (forward) => {
-        const state = forward ? after : before;
-        p.paint = state.paint;
-        p.splits = state.splits;
-        v.rebuildSurface(state.ranges, after.changed);
-      };
-      const label = stroke.label;
-      stroke = null;
-      change(true);
-      record(
-        label,
-        change,
-        before.paint.length +
-          (before.splits?.length ?? 0) +
-          after.paint.length +
-          after.splits.length
-      );
-      return;
-    }
-    for (const [id, color] of edits) setColor(id, color);
-    v.recolor();
-  }
-  const { old, label } = stroke;
+  const { old, label, refiner } = stroke;
   stroke = null;
+  if (refiner) {
+    refiner.dispose();
+    commitLeafEdits(refiner.edits, label + (refiner.limited ? ' (detail limit reached)' : ''));
+    return;
+  }
   if (!old.size) return;
-  const ids = Uint32Array.from(old.keys()),
-    before = Uint8Array.from(old.values()),
-    after = idsToColors(ids);
+  const ids = Uint32Array.from(old.keys());
+  recordColors(label, ids, Uint8Array.from(old.values()), idsToColors(ids));
+}
+function commitLeafEdits(edits, label) {
+  if (!edits.size) return;
+  for (const tree of edits.values()) {
+    if (typeof tree === 'number') continue;
+    recordSurfaceChange(label, applyLeafEdits(p, edits, v.ranges));
+    return;
+  }
+  const ids = Uint32Array.from(edits.keys()), before = idsToColors(ids);
+  for (const [id, color] of edits) {
+    p.paint[id] = color;
+    v.color(id, color);
+  }
+  v.recolor();
+  recordColors(label, ids, before, Uint8Array.from(edits.values()));
+}
+function recordColors(label, ids, before, after) {
+  const merged = mergeRepaintedCells(p, v.ranges, ids);
+  if (merged) {
+    // A plain brush updates colors in place during the drag. Restore the old
+    // slots in the before-state so Undo restores both the edge and its paint.
+    ids.forEach((id, i) => { p.paint[id] = before[i]; });
+    recordSurfaceChange(label, merged);
+    return;
+  }
   record(
     label,
     (forward) => {
       const colors = forward ? after : before;
       ids.forEach((id, i) => {
-        p.paint[id] = colors[i];
-        v.color(id, colors[i]);
+        p.paint[id] = typeof colors === 'number' ? colors : colors[i];
+        v.color(id, p.paint[id]);
       });
       v.recolor();
     },
-    ids.byteLength + before.byteLength + after.byteLength
+    ids.byteLength + before.byteLength + (after.byteLength ?? 0)
   );
+}
+function updatePaintTriangleCount() {
+  $('paint-triangles').textContent = p.paint.length.toLocaleString() + ' / ' + MAX_CELLS.toLocaleString() + ' paint triangles';
+}
+function recordSurfaceChange(label, after) {
+  const before = { paint: p.paint, splits: p.splits, ranges: v.ranges };
+  const change = forward => {
+    const state = forward ? after : before;
+    p.paint = state.paint;
+    p.splits = state.splits;
+    v.rebuildSurface(state.ranges, after.changed);
+    updatePaintTriangleCount();
+  };
+  change(true);
+  record(label, change, before.paint.length + (before.splits?.length ?? 0) +
+    after.paint.length + (after.splits?.length ?? 0));
 }
 function idsToColors(ids) {
   return Uint8Array.from(ids, (id) => p.paint[id]);
 }
 function undo(redo = false) {
+  cancelBand();
   finishStroke();
   const from = redo ? future : history,
     to = redo ? history : future;
@@ -313,7 +357,8 @@ function undo(redo = false) {
   state();
   notify((redo ? 'Redid ' : 'Undid ') + h.label.toLowerCase());
   if (h.scope === 'paint') paintRevision++;
-  if (h.scope !== 'library') refreshColorLimit();
+  if (h.scope === 'paint' || h.scope === 'palette') refreshColorLimit();
+  if (tool === 'Fill Gaps') refreshGaps();
   scheduleFillHover();
 }
 function removeButton(label, action) {
@@ -330,6 +375,7 @@ function swatchName(slot) {
   return p.mixes?.[slot] ? 'Mix ' + (Object.keys(p.mixes).indexOf(String(slot)) + 1)
     : 'Color ' + (physicalSlots(p).indexOf(slot) + 1);
 }
+const swatchKeys = '1234567890';
 function setExpanded(button, expanded) {
   button.setAttribute('aria-expanded', String(expanded));
   $(button.getAttribute('aria-controls')).hidden = !expanded;
@@ -339,6 +385,47 @@ for (const button of all('.panel-toggle')) {
 }
 function revealPanel(id) {
   setExpanded(document.querySelector(`[aria-controls="${id}"]`), true);
+}
+function selectSwatch(slot) {
+  document.querySelector('.swatch-row [aria-pressed="true"]')?.setAttribute('aria-pressed', 'false');
+  selected = slot;
+  if (lasso?.closed) previewLasso();
+  document.querySelector(`[data-swatch="${slot}"]`).setAttribute('aria-pressed', 'true');
+  refreshFillHover();
+  if (tool === 'Text') armPreview();
+  if (tool === 'Band') {
+    if (bandLower.valueAsNumber < bandUpper.valueAsNumber) bandPending = true;
+    updateBand();
+  }
+}
+function swatchLock(slot, name) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'swatch-lock';
+  button.setAttribute('role', 'switch');
+  button.setAttribute('aria-label', 'Protect ' + name);
+  const locked = p.lockedSlots.has(slot);
+  button.setAttribute('aria-checked', String(locked));
+  button.title = (locked ? 'Unlock ' : 'Lock ') + name + ' on the model';
+  const icon = document.createElement('i');
+  icon.dataset.lucide = locked ? 'lock' : 'lock-open';
+  button.append(icon);
+  button.onclick = () => {
+    finishStroke();
+    clearPreview();
+    const change = forward => {
+      const protect = forward ? !locked : locked;
+      if (protect) p.lockedSlots.add(slot);
+      else p.lockedSlots.delete(slot);
+    };
+    change(true);
+    record((locked ? 'Unlocked ' : 'Locked ') + name, change, 0, 'locks');
+    paletteUI();
+    document.querySelector(`[data-swatch="${slot}"] + .swatch-lock`).focus({ preventScroll: true });
+    schedulePreview();
+    scheduleFillHover();
+  };
+  return button;
 }
 function paletteUI() {
   const list = $('palette');
@@ -361,6 +448,7 @@ function paletteUI() {
     picker.title = 'Edit ' + name;
     picker.setAttribute('aria-label', picker.title);
     const b = document.createElement('button');
+    b.dataset.swatch = i;
     b.setAttribute('aria-label', name + (i === 0 ? ' (base)' : ''));
     b.setAttribute('aria-pressed', String(i === selected));
     const code = document.createElement('span');
@@ -380,23 +468,24 @@ function paletteUI() {
       });
       b.setAttribute('aria-description', recipe.textContent);
       b.append(heading, recipe);
-    } else b.append(code, document.createTextNode(name));
-    if (i === 0) {
-      const tag = document.createElement('span');
-      tag.className = 'base';
-      tag.textContent = 'Base';
-      b.append(tag);
+    } else {
+      const heading = document.createElement('span');
+      heading.className = 'solid-heading';
+      const label = document.createElement('span');
+      label.textContent = name;
+      heading.append(code, label);
+      if (i === 0) {
+        const tag = document.createElement('span');
+        tag.className = 'base';
+        tag.textContent = 'Base';
+        heading.append(tag);
+      }
+      b.append(heading);
     }
     const icon = document.createElement('i');
     icon.dataset.lucide = 'check';
     b.append(icon);
-    b.onclick = () => {
-      document.querySelector('.swatch-row [aria-pressed="true"]')?.setAttribute('aria-pressed', 'false');
-      selected = i;
-      refreshFillHover();
-      if (tool === 'Text') armPreview();
-      b.setAttribute('aria-pressed', 'true');
-    };
+    b.onclick = () => selectSwatch(i);
     picker.onclick = parts ? () => editMix(i) : b.onclick;
     picker.onchange = () => {
       const next = picker.value.toUpperCase();
@@ -408,12 +497,20 @@ function paletteUI() {
       }
       editPaletteColor(i, next);
     };
-    row.append(picker, b);
+    row.append(picker, b, swatchLock(i, name));
     if (p.palette.length > 1) row.append(removeButton('Remove ' + name, () => requestColorRemoval(i)));
     (parts ? mixedList : list).append(row);
   });
-  createIcons({ icons: { Check }, root: list });
-  createIcons({ icons: { Check }, root: mixedList });
+  // Sidebar order groups physical filaments first, even if a mix was saved earlier.
+  all('.swatch-row [data-swatch]').slice(0, swatchKeys.length).forEach((button, index) => {
+    const key = swatchKeys[index], cap = document.createElement('kbd');
+    cap.textContent = key;
+    cap.setAttribute('aria-hidden', 'true');
+    button.firstElementChild.prepend(cap);
+    button.setAttribute('aria-keyshortcuts', key);
+    button.title = button.getAttribute('aria-label') + ' (' + key + ')';
+  });
+  for (const root of [list, mixedList]) createIcons({ icons: { Check, Lock, LockOpen }, root });
   if (!mixedList.childElementCount) {
     const hint = document.createElement('span');
     hint.className = 'hint';
@@ -422,6 +519,7 @@ function paletteUI() {
   }
   $('add-color').disabled = physical.length >= MAX_FILAMENTS || p.palette.length >= MAX_SWATCHES;
   $('add-mix').disabled = physical.length < 2 || p.palette.length >= MAX_SWATCHES;
+  if (tool === 'Band') updateBand();
 }
 const stampRows = new WeakMap();
 function stampUI() {
@@ -493,19 +591,32 @@ function updatePlacementVisibility() {
 }
 const hints = {
   Brush: 'Drag across the visible surface to paint.',
-  Fill: 'Hover to preview. Use [ and ] to adjust the edge angle. Click to fill.',
+  Band: 'Click twice to set the bounds, or enter both distances.',
+  Fill: 'Hover to preview. Tap [ or ] for 1°, or hold to keep adjusting. Click to fill.',
+  'Fill Gaps': 'Preview small patches enclosed by one swatch. Apply fills them together. Esc cancels.',
+  'Fill Lasso': 'Click to place nodes. Backspace removes the last node. After three or more, click the first node to close and preview. Apply paints the area. Esc cancels.',
   Eraser: 'Drag to expose the current base color.',
   Text: 'Click or drag to position your text. Press Esc to cancel and return to Brush.',
   Stamps: 'Click or drag to position the stamp. Press Esc to cancel and return to Brush.',
 };
 function toolUI() {
-  $('tool-title').textContent = tool;
-  $('tool-key').textContent = tool[0];
   $('tool-hint').textContent = hints[tool];
-  for (const b of all('[data-tool]'))
-    b.setAttribute('aria-pressed', String(b.dataset.tool === tool));
+  for (const b of all('[data-tool]')) {
+    const active = b.dataset.tool === tool;
+    b.setAttribute('aria-pressed', String(active));
+    if (active) {
+      $('tool-title').textContent = b.getAttribute('aria-label');
+      $('tool-key').textContent = b.getAttribute('aria-keyshortcuts');
+      $('tool-symbol').replaceChildren(b.querySelector('svg').cloneNode(true));
+    }
+  }
   $('brush-panel').hidden = !['Brush', 'Eraser'].includes(tool);
+  $('edge-control').hidden = $('brush-panel').hidden && tool !== 'Fill Lasso';
+  $('lasso-panel').hidden = tool !== 'Fill Lasso';
   $('fill-panel').hidden = tool !== 'Fill';
+  $('gap-panel').hidden = tool !== 'Fill Gaps';
+  $('band-panel').hidden = tool !== 'Band';
+  if (tool === 'Band') updateBand();
   $('stamp-panel').hidden = tool !== 'Stamps';
   const text = tool === 'Text';
   if (text) fontList ??= loadFontFamilies($('text-font')).then(schedulePreview);
@@ -519,6 +630,75 @@ function toolUI() {
   $('pointer').hidden = true;
   $('apply').disabled = !hasPreview();
 }
+const bandLower = $('band-lower'), bandUpper = $('band-upper');
+const bandDirection = $('band-direction');
+let bandStart = null, bandHover = null, bandPending = false;
+function updateBand() {
+  let low = bandLower.valueAsNumber, high = bandUpper.valueAsNumber;
+  const ready = bandPending && low < high;
+  $('apply-band').disabled = !ready;
+  const axis = Number(bandDirection.value);
+  let hint = hints.Band + ' Zero is at the ' + ['left', 'front', 'bottom'][axis] + ' of the model.';
+  if (bandStart !== null) {
+    hint = 'Click the second bound, on or off the model. Esc cancels.';
+    if (bandHover !== null) {
+      low = Math.min(bandStart, bandHover);
+      high = Math.max(bandStart, bandHover);
+    }
+  } else if (ready) hint = 'Adjust either bound, then choose Apply band. Esc cancels.';
+  else if (bandPending && low >= high) hint = 'To must be greater than From.';
+  $('tool-hint').textContent = hint;
+  if (bandPending && low < high && !samplingColor)
+    v.showBand(v.box.min[axis] + low, v.box.min[axis] + high, p.palette[selected], revision, axis);
+  else v.showBand(1, 0);
+}
+function cancelBand() {
+  if (!bandPending) return;
+  bandPending = false;
+  bandStart = bandHover = null;
+  bandLower.value = bandUpper.value = '';
+  updateBand();
+}
+function pickBandBound(position) {
+  // A single manually entered value can also be the first endpoint.
+  const first = bandStart ?? (bandLower.value === '' ? bandUpper.valueAsNumber :
+    bandUpper.value === '' ? bandLower.valueAsNumber : NaN);
+  bandPending = true;
+  bandHover = null;
+  if (Number.isFinite(first)) {
+    bandLower.value = Math.min(first, position);
+    bandUpper.value = Math.max(first, position);
+    bandStart = null;
+  } else {
+    bandStart = position;
+    bandLower.value = position;
+    bandUpper.value = '';
+  }
+  updateBand();
+}
+function applyBand() {
+  if ($('apply-band').disabled) return;
+  const axis = Number(bandDirection.value), origin = v.box.min[axis];
+  const low = origin + bandLower.valueAsNumber, high = origin + bandUpper.valueAsNumber;
+  task('Painting band…', () => {
+    const edits = bandEdits(v.chunks, p.paint, axis, low, high, selected, p.lockedSlots);
+    bandPending = false;
+    updateBand();
+    if (edits.size) commitLeafEdits(edits, 'Painted band');
+    else notify('No editable paint would change in this band.');
+  });
+}
+bandLower.oninput = bandUpper.oninput = () => {
+  bandPending = true;
+  bandStart = bandHover = null;
+  updateBand();
+};
+bandDirection.onchange = () => {
+  bandHover = null;
+  if (bandLower.valueAsNumber < bandUpper.valueAsNumber) bandPending = true;
+  updateBand();
+};
+$('apply-band').onclick = applyBand;
 let fillJobs;
 const fillLayer = $('fill-highlight').firstElementChild;
 const fillPreview = new FillPreview(findFillRegion, mask =>
@@ -531,10 +711,10 @@ function clearFillHover() {
 }
 function fillSeed(point) {
   const seed = v.pick(point.x, point.y);
-  return $('protect').checked && p.paint[seed] === selected ? -1 : seed;
+  return p.lockedSlots.has(p.paint[seed]) || ($('protect').checked && p.paint[seed] === selected) ? -1 : seed;
 }
 function scheduleFillHover() {
-  if (!fillPoint || tool !== 'Fill' || busy || pickingFace || fillFrame) return;
+  if (!fillPoint || tool !== 'Fill' || busy || pickingFace || samplingColor || fillFrame) return;
   fillFrame = requestAnimationFrame(() => {
     fillFrame = 0;
     fillPreview.hover(fillPoint ? fillSeed(fillPoint) : -1);
@@ -546,6 +726,10 @@ function refreshFillHover() {
 }
 function prepareFill() {
   const surface = v.surface;
+  if (fillJobs?.closed) {
+    fillJobs = null;
+    delete surface.graphJob;
+  }
   const jobs = fillJobs ??= new FillJobs();
   surface.graphJob ??= jobs.prepare(p, v).catch(error => {
     delete surface.graphJob;
@@ -557,13 +741,106 @@ function prepareFill() {
   });
   return surface.graphJob;
 }
+const gapWidth = $('gap-width'), applyGaps = $('apply-gaps');
+const gapSeams = $('gap-seams');
+const gapSpinner = $('gap-spinner');
+let gapGeneration = 0, gapTimer = 0, gapFrame = 0, gapSearching = false, gapResult, scanningWorker;
+function clearGaps() {
+  gapGeneration++;
+  if (scanningWorker) {
+    scanningWorker.close('Gap preview canceled.');
+    scanningWorker = null;
+  }
+  clearTimeout(gapTimer);
+  cancelAnimationFrame(gapFrame);
+  gapTimer = gapFrame = 0;
+  gapResult = null;
+  gapSpinner.hidden = true;
+  v.showGapColors(null);
+  fillLayer.parentElement.hidden = true;
+  applyGaps.disabled = true;
+}
+function renderGaps() {
+  if (!gapResult?.count || gapFrame) return;
+  gapFrame = requestAnimationFrame(() => {
+    gapFrame = 0;
+    fillLayer.parentElement.hidden = samplingColor;
+    v.showGapColors(samplingColor ? null : gapResult.targets);
+    if (!samplingColor) drawSurfaceHighlight(fillLayer, v, id => id < 0 ? 255 : gapResult.targets[id], p.palette, true);
+  });
+}
+function refreshGaps() {
+  clearGaps();
+  if (!(gapWidth.valueAsNumber > 0)) {
+    $('gap-count').textContent = 'Enter a size greater than zero.';
+    return;
+  }
+  if (!hasMultipleSwatches(p.paint)) {
+    $('gap-count').textContent = '0 gaps to fill';
+    return;
+  }
+  $('gap-count').textContent = 'Checking surface…';
+  gapSpinner.hidden = false;
+  gapTimer = setTimeout(searchGaps, 100);
+}
+async function searchGaps() {
+  gapTimer = 0;
+  if (gapSearching) return;
+  gapSearching = true;
+  const generation = gapGeneration;
+  try {
+    await prepareFill();
+    if (generation !== gapGeneration) return;
+    scanningWorker = fillJobs;
+    const result = await scanningWorker.gaps(v, p, gapWidth.valueAsNumber, gapSeams.checked, percent => {
+      if (generation === gapGeneration) $('gap-count').textContent = 'Checking thin seams… ' + percent + '%';
+    });
+    if (generation !== gapGeneration) return;
+    gapResult = result;
+    $('gap-count').textContent = result.count === 1 ? '1 gap to fill' : result.count.toLocaleString() + ' gaps to fill';
+    applyGaps.disabled = !result.count;
+    renderGaps();
+  } catch (err) {
+    if (generation === gapGeneration) {
+      $('gap-count').textContent = 'Could not preview gaps.';
+      error(err);
+    }
+  } finally {
+    if (generation === gapGeneration) gapSpinner.hidden = true;
+    scanningWorker = null;
+    gapSearching = false;
+    if (generation !== gapGeneration && tool === 'Fill Gaps' && !gapTimer &&
+        gapWidth.valueAsNumber > 0 && hasMultipleSwatches(p.paint)) searchGaps();
+  }
+}
+gapWidth.oninput = refreshGaps;
+gapSeams.onchange = refreshGaps;
+applyGaps.onclick = () => {
+  if (!gapResult?.count || busy) return;
+  const { targets, count } = gapResult;
+  chooseTool('Brush');
+  refreshColorLimit.beforeStroke();
+  let changed = 0;
+  for (const slot of targets) if (slot !== 255) changed++;
+  const ids = new Uint32Array(changed), before = new Uint8Array(changed), after = new Uint8Array(changed);
+  for (let i = 0, k = 0; i < targets.length; i++) {
+    if (targets[i] === 255) continue;
+    ids[k] = i;
+    before[k] = p.paint[i];
+    after[k++] = targets[i];
+    p.paint[i] = targets[i];
+    v.color(i, targets[i]);
+  }
+  v.recolor();
+  recordColors('Filled ' + count + (count === 1 ? ' gap' : ' gaps'), ids, before, after);
+};
 async function findFillRegion(seed) {
   const surface = v.surface, angle = +$('angle').value, protect = $('protect').checked;
   await prepareFill();
   if (v.surface !== surface) return null;
   const jobs = fillJobs;
   try {
-    return await jobs.region(p.paint, paintRevision, seed, angle, protect);
+    return await jobs.region(p.paint, paintRevision, seed, angle, protect, p.lockedSlots);
   } catch (error) {
     if (fillJobs === jobs) {
       delete surface.graphJob;
@@ -585,24 +862,24 @@ function applyFill(mask) {
     ids[n] = i;
     before[n++] = p.paint[i];
   }
-  const change = forward => {
-    for (let n = 0; n < count; n++) {
-      const id = ids[n];
-      p.paint[id] = forward ? color : before[n];
-      v.color(id, p.paint[id]);
-    }
-    v.recolor();
-  };
   refreshColorLimit.beforeStroke();
-  change(true);
-  record('Filled region', change, ids.byteLength + before.byteLength);
+  for (const id of ids) {
+    p.paint[id] = color;
+    v.color(id, color);
+  }
+  v.recolor();
+  recordColors('Filled region', ids, before, color);
 }
 function chooseTool(name) {
+  if (tool === 'Fill Gaps') clearGaps();
+  cancelBand();
+  stopFillAngleRepeat();
   if (pickingFace) setFacePicking(false);
   draggingArtwork = false;
   finishStroke();
   clearPreview();
   tool = name;
+  if (tool === 'Fill Gaps') refreshGaps();
   if (tool === 'Fill') prepareFill().catch(() => {});
   armed = tool === 'Text';
   if (tool === 'Stamps') {
@@ -616,6 +893,8 @@ function chooseTool(name) {
   scheduleFillHover();
 }
 function load(project, kind, documentName = project.name, prepared) {
+  if (tool === 'Fill Gaps') clearGaps();
+  cancelBand();
   if (pickingFace) setFacePicking(false);
   draggingArtwork = false;
   if (v?.project) clearPreview();
@@ -626,26 +905,38 @@ function load(project, kind, documentName = project.name, prepared) {
   stroke = null;
   anchor = null;
   const context = p.editingContext;
+  gapWidth.value = Number.isFinite(context?.gapWidth) && context.gapWidth > 0 ? context.gapWidth : 0.5;
+  gapSeams.checked = context?.gapSeams === true;
+  const locks = Array.isArray(context?.lockedSlots) ? context.lockedSlots : [];
+  p.lockedSlots = new Set(locks.filter(i => Number.isInteger(i) && i >= 0 && i < p.palette.length));
+  const bounds = context?.bandBounds;
+  bandDirection.value = [0, 1, 2].includes(bounds?.axis) ? String(bounds.axis) : '2';
+  bandLower.value = Number.isFinite(bounds?.lower) ? bounds.lower : '';
+  bandUpper.value = Number.isFinite(bounds?.upper) ? bounds.upper : '';
   for (const [name, size] of Object.entries(sizes)) size.restore(context?.sizes?.[name]);
   const color = typeof context?.color === 'string' ? p.palette.indexOf(context.color.toUpperCase()) : -1;
   selected = color >= 0 ? color : Math.min(kind === 'SAMPLE MODEL' ? 2 : 1, p.palette.length - 1);
   refineEdges.checked = true;
-  tool = typeof context?.tool === 'string' && Object.hasOwn(hints, context.tool) ? context.tool : 'Brush';
+  const savedTool = context?.tool === 'Height Band' ? 'Band' : context?.tool;
+  tool = typeof savedTool === 'string' && Object.hasOwn(hints, savedTool) ? savedTool : 'Brush';
+  bandPending = tool === 'Band' && bounds?.pending === true;
+  if (bandPending && Number.isFinite(bounds.lower) && bandUpper.value === '') bandStart = bounds.lower;
   stampIndex = tool === 'Stamps' && Number.isInteger(context?.stampIndex) &&
     context.stampIndex >= 0 && context.stampIndex < p.stamps.length ? context.stampIndex : -1;
   armed = tool === 'Text' || stampIndex >= 0;
   fillJobs?.close();
   fillJobs = null;
   v.setProject(p, prepared);
+  if (tool === 'Fill Gaps') refreshGaps();
   if (tool === 'Fill') prepareFill().catch(() => {});
   $('projection').textContent = v.camera.isOrthographicCamera ? 'Orthographic' : 'Perspective';
   $('model-kind').textContent = kind;
-  $('model-name').textContent = p.name;
-  setDocumentName(documentName);
+  setDocumentName(documentName, kind === 'PAINTER PROJECT');
   ['X', 'Y', 'Z'].forEach((axis, i) => {
     $('dimensions').querySelector('.axis-' + axis).textContent = Number(v.box.size[i].toFixed(2));
   });
   $('faces').textContent = p.depth.length.toLocaleString() + ' source triangles';
+  updatePaintTriangleCount();
   paletteUI();
   stampUI();
   toolUI();
@@ -655,6 +946,7 @@ function load(project, kind, documentName = project.name, prepared) {
 }
 async function task(message, fn) {
   if (busy) return false;
+  stopFillAngleRepeat();
   busy = true;
   clearFillHover();
   finishStroke();
@@ -678,25 +970,35 @@ async function write(kind) {
   finishStroke();
   const exported = kind === 'export';
   if (!(await files.chooseWrite(kind, p.name))) return false;
-  const data = exported ? {
+  const data = {
     name: p.name, vertices: p.vertices, faces: p.faces, depth: p.depth,
     paint: p.paint, splits: p.splits, palette: p.palette, mixes: p.mixes,
-  } : {
-    ...p,
-    editingContext: {
+  };
+  if (!exported) {
+    data.stamps = p.stamps;
+    data.editingContext = {
       camera: v.cameraState(),
       tool,
+      ...(tool === 'Fill Gaps' && gapWidth.valueAsNumber > 0 && { gapWidth: gapWidth.valueAsNumber }),
+      ...(tool === 'Fill Gaps' && gapSeams.checked && { gapSeams: true }),
+      ...(tool === 'Band' && { bandBounds: {
+        axis: Number(bandDirection.value),
+        lower: Number.isFinite(bandLower.valueAsNumber) ? bandLower.valueAsNumber : null,
+        upper: Number.isFinite(bandUpper.valueAsNumber) ? bandUpper.valueAsNumber : null,
+        pending: bandPending,
+      } }),
       color: p.palette[selected],
+      ...(p.lockedSlots.size && { lockedSlots: [...p.lockedSlots] }),
       sizes: Object.fromEntries(Object.entries(sizes).map(([name, size]) => [name, size.settings()])),
       ...(tool === 'Stamps' && { stampIndex }),
-    },
-  };
+    };
+  }
   const name = await files.write(data);
   if (!name) return false;
   if (!exported) {
     saved = revision;
     $('model-kind').textContent = 'PAINTER PROJECT';
-    setDocumentName(name);
+    setDocumentName(name, true);
     state();
   }
   notify((exported ? 'Exported ' : 'Saved ') + name);
@@ -728,6 +1030,11 @@ function openModel(selectFile) {
       next = await modelJob({ project: true, bytes }, [bytes.buffer]);
       if (next.depth.length > LARGE_MODEL_FACES && next.depth.length !== faces &&
           !(await files.confirmLargeModel(next.depth.length))) return;
+    }
+    if (!project && p) {
+      next.palette = p.palette.slice();
+      if (p.mixes) next.mixes = structuredClone(p.mixes);
+      next.editingContext = { color: p.palette[selected] };
     }
     const { vertices, faces: indices, depth, paint, splits, palette } = next;
     const attributes = [vertices, indices, depth, paint, splits].filter(Boolean);
@@ -762,22 +1069,25 @@ files.onClose(() => task('Closing project…', async () => (await prepareToLeave
 $('undo').onclick = () => undo();
 $('redo').onclick = () => undo(true);
 $('clear-paint').onclick = () => {
+  cancelBand();
   finishStroke();
   armed = draggingArtwork = false;
   clearPreview();
   $('apply').disabled = true;
-  if (!p.paint.some(color => color !== 0)) {
-    notify('The model already uses only the base color.');
+  const locks = new Set(p.lockedSlots);
+  if (!p.paint.some(color => color !== 0 && !locks.has(color))) {
+    notify(locks.size ? 'No unlocked paint to clear.' : 'The model already uses only the base color.');
     return;
   }
   const before = p.paint.slice();
   const change = forward => {
-    if (forward) p.paint.fill(0);
-    else p.paint.set(before);
+    if (!forward) p.paint.set(before);
+    else if (!locks.size) p.paint.fill(0);
+    else for (let i = 0; i < before.length; i++) if (!locks.has(before[i])) p.paint[i] = 0;
     v.refreshPalette();
   };
   change(true);
-  record('Cleared all paint to the base color', change, before.byteLength);
+  record(locks.size ? 'Cleared unlocked paint to the base color' : 'Cleared all paint to the base color', change, before.byteLength);
 };
 for (const b of all('[data-tool]')) b.onclick = () => chooseTool(b.dataset.tool);
 $('add-color').onclick = () => {
@@ -873,6 +1183,8 @@ function removePaletteColor(id, replacement, dependent = []) {
 
 function replacePalette(label, remaining, afterMixes, slots) {
   const original = p.palette.slice(), beforeMixes = p.mixes ?? {}, previousSelection = selected;
+  const beforeLocks = p.lockedSlots;
+  const afterLocks = new Set([...beforeLocks].map(i => remaining.indexOf(original[i])).filter(i => i >= 0));
   const remap = (index) => index === 255 ? 255 : slots[index];
   // Preserve the original arrays so undo can separate the merged colors again.
   const updates = [];
@@ -889,6 +1201,7 @@ function replacePalette(label, remaining, afterMixes, slots) {
   const change = (forward) => {
     p.palette = (forward ? remaining : original).slice();
     p.mixes = forward ? afterMixes : beforeMixes;
+    p.lockedSlots = forward ? afterLocks : beforeLocks;
     for (const { owner, key, before, after } of updates) owner[key] = forward ? after : before;
     selected = forward ? remap(previousSelection) : previousSelection;
     v.refreshPalette();
@@ -1021,6 +1334,110 @@ window.addEventListener('pointercancel', finishStampResize, true);
 stampSlider.addEventListener('lostpointercapture', finishStampResize);
 window.addEventListener('blur', finishStampResize);
 const refineEdges = $('refine-edges');
+let lasso = null;
+const lassoOutline = $('lasso-outline'), lassoLine = $('lasso-curve');
+const lassoGuide = $('lasso-guide'), lassoNodes = lassoOutline.querySelector('g');
+function lockLassoView(locked) {
+  v.controls.enabled = !locked;
+  $('view-cube').toggleAttribute('inert', locked);
+  for (const id of ['view', 'align-face', 'projection', 'fit']) $(id).disabled = locked;
+}
+function cancelLasso() {
+  if (!lasso) return;
+  v.clearPaintPreview();
+  lasso = null;
+  lassoLine.removeAttribute('d');
+  lassoNodes.replaceChildren();
+  lassoGuide.removeAttribute('d');
+  lockLassoView(false);
+  $('apply-lasso').disabled = true;
+}
+function nearLassoStart(pt) {
+  const first = lasso.points[0];
+  return lasso.points.length >= 3 && Math.hypot(first.x - pt.x, first.y - pt.y) <= 7;
+}
+function removeLastLassoNode() {
+  if (lasso.points.length === 1) {
+    cancelLasso();
+    notify('Lasso cleared. Click to start again.');
+    return;
+  }
+  if (lasso.closed) {
+    v.clearPaintPreview();
+    lasso.closed = false;
+    lasso.edits = null;
+    $('apply-lasso').disabled = true;
+  }
+  lasso.points.pop();
+  lassoNodes.lastElementChild.remove();
+  drawLasso(v.canvas.matches(':hover') ? brushCursorPosition : null);
+  notify('Last lasso node removed.');
+}
+function drawLasso(hover) {
+  const nodes = lasso.points, first = nodes[0], last = nodes.at(-1);
+  const guide = hover && (hover.x !== last.x || hover.y !== last.y);
+  const closed = lasso.closed || (guide && nearLassoStart(hover));
+  const points = guide && !closed ? [...nodes, hover] : nodes;
+  const segments = lassoSegments(points, closed);
+  if (guide) {
+    lassoGuide.setAttribute('d', 'M ' + last.x + ' ' + last.y + ' ' + segments.pop());
+  } else lassoGuide.removeAttribute('d');
+  lassoLine.setAttribute('d', ['M', first.x, first.y, ...segments, lasso.closed ? 'Z' : ''].join(' ').trim());
+}
+function placeLassoNode(pt) {
+  if (lasso?.closed) return;
+  if (!lasso) {
+    lasso = { points: [], closed: false };
+    lockLassoView(true);
+  }
+  if (nearLassoStart(pt)) {
+    lasso.closed = true;
+  } else {
+    if (lasso.points.some(p => p.x === pt.x && p.y === pt.y)) return;
+    lasso.points.push(pt);
+    const node = document.createElementNS(lassoOutline.namespaceURI, 'circle');
+    node.setAttribute('cx', pt.x);
+    node.setAttribute('cy', pt.y);
+    node.setAttribute('r', lasso.points.length === 1 ? 5 : 3);
+    lassoNodes.append(node);
+  }
+  drawLasso();
+  if (lasso.closed) previewLasso();
+}
+function previewLasso() {
+  try {
+    v.clearPaintPreview();
+    const footprint = lassoFootprint(lassoLine.getAttribute('d'), lassoLine.getBBox(), v.w, v.h, selected);
+    if (footprint && refineEdges.checked) {
+      const refiner = new RefinedStroke(v);
+      refiner.projectFootprint(footprint);
+      lasso.edits = refiner.edits;
+      lasso.limited = refiner.limited;
+    } else {
+      lasso.edits = footprint && v.lassoCells(footprint);
+      lasso.limited = false;
+    }
+    if (!lasso.edits?.size) {
+      $('apply-lasso').disabled = true;
+      notify('No visible paint would change. Choose another color or press Esc to cancel.');
+      return;
+    }
+    v.previewPaint(lasso.edits);
+    $('apply-lasso').disabled = false;
+    notify('Lasso preview · Apply to paint or press Esc to cancel.');
+  } catch (err) {
+    cancelLasso();
+    error(err);
+  }
+}
+refineEdges.addEventListener('change', () => { if (lasso?.closed) previewLasso(); });
+$('apply-lasso').onclick = () => {
+  if (!lasso?.edits?.size) return;
+  const { edits, limited } = lasso;
+  cancelLasso();
+  refreshColorLimit.beforeStroke();
+  commitLeafEdits(edits, limited ? 'Filled lasso (detail limit reached)' : 'Filled lasso');
+};
 const refineStamp = $('refine-stamp');
 refineStamp.onchange = () => {
   localStorage.setItem(
@@ -1223,6 +1640,24 @@ function bindCanvas() {
   };
   let last = null,
     pointerId = null;
+  function sampleMode(active) {
+    if (samplingColor === active || (active && pointerId !== null)) return;
+    samplingColor = active;
+    if (tool === 'Fill Gaps') renderGaps();
+    v.host.classList.toggle('sampling-color', active);
+    if (placingArtwork() && armed) {
+      if (active) updatePreview();
+      else schedulePreview();
+    }
+    if (tool === 'Band') updateBand();
+    refreshFillHover();
+  }
+  window.addEventListener('keydown', e => {
+    if (e.key === 'Alt' && !busy && !document.querySelector('dialog[open]')) sampleMode(true);
+  });
+  window.addEventListener('keyup', e => {
+    if (e.key === 'Alt') sampleMode(false);
+  });
   function cursor(pos) {
     const el = $('pointer');
     brushCursorPosition = pos;
@@ -1254,6 +1689,18 @@ function bindCanvas() {
     }
     canvas.focus({ preventScroll: true });
     const pt = point(e);
+    sampleMode(e.altKey);
+    if (e.altKey) {
+      e.preventDefault();
+      const id = v.pick(pt.x, pt.y);
+      if (id >= 0) {
+        const slot = p.paint[id];
+        revealPanel(p.mixes?.[slot] ? 'mixed-colors' : 'palette');
+        selectSwatch(slot);
+        notify('Picked ' + swatchName(slot) + ' · ' + p.palette[slot]);
+      }
+      return;
+    }
     if (pickingFace) {
       if (v.alignToFace(pt)) {
         setFacePicking(false);
@@ -1262,6 +1709,15 @@ function bindCanvas() {
       return;
     }
     if (tool === 'Stamps' && stampIndex < 0) return;
+    if (tool === 'Fill Gaps') return;
+    if (tool === 'Fill Lasso') {
+      if (e.isPrimary) placeLassoNode(pt);
+      return;
+    }
+    if (tool === 'Band') {
+      pickBandBound(v.bandPositionAt(pt, Number(bandDirection.value)));
+      return;
+    }
     pointerId = e.pointerId;
     canvas.setPointerCapture(e.pointerId);
     if (tool === 'Fill') {
@@ -1289,11 +1745,23 @@ function bindCanvas() {
     const pt = point(e);
     fillPoint = !e.buttons && e.pointerType !== 'touch' ? pt : null;
     if (busy) return;
+    sampleMode(e.altKey);
+    if (bandStart !== null && !e.buttons && !e.altKey && !pickingFace) {
+      const position = v.bandPositionAt(pt, Number(bandDirection.value));
+      if (bandHover !== position) {
+        bandHover = position;
+        updateBand();
+      }
+    }
     scheduleFillHover();
     if (e.buttons && !(e.buttons & 1)) {
       return;
     }
     cursor(pt);
+    if (lasso && !lasso.closed) {
+      drawLasso(pt);
+      return;
+    }
     if (pointerId !== e.pointerId) return;
     if (draggingArtwork && placingArtwork()) {
       anchor = pt;
@@ -1323,30 +1791,94 @@ function bindCanvas() {
   canvas.addEventListener('pointercancel', end);
   canvas.addEventListener('lostpointercapture', end);
   canvas.addEventListener('pointerleave', () => {
+    if (lasso && !lasso.closed) drawLasso();
     fillPoint = null;
     clearFillHover();
     $('pointer').hidden = true;
   });
   window.addEventListener('blur', e => {
+    sampleMode(false);
     fillPoint = null;
     clearFillHover();
     end(e);
   });
 }
+let heldFillKey = null, fillRepeatTimer;
+function stopFillAngleRepeat() {
+  clearTimeout(fillRepeatTimer);
+  heldFillKey = null;
+}
+function startFillAngleRepeat(e) {
+  if (e.repeat) return;
+  stopFillAngleRepeat();
+  heldFillKey = e.code || e.key;
+  const angle = $('angle'), decrease = e.key === '[';
+  function step(delay) {
+    const previous = angle.value;
+    if (decrease) angle.stepDown();
+    else angle.stepUp();
+    if (angle.value === previous) {
+      stopFillAngleRepeat();
+      return;
+    }
+    angle.dispatchEvent(new Event('input', { bubbles: true }));
+    fillRepeatTimer = setTimeout(() => step(125), delay);
+  }
+  step(400);
+}
+window.addEventListener('keyup', e => {
+  if ((e.code || e.key) === heldFillKey) stopFillAngleRepeat();
+}, true);
+window.addEventListener('blur', stopFillAngleRepeat);
+document.addEventListener('focusin', stopFillAngleRepeat);
+document.addEventListener('visibilitychange', stopFillAngleRepeat);
+const applyButtonByTool = { Band: 'apply-band', 'Fill Gaps': 'apply-gaps', 'Fill Lasso': 'apply-lasso', Stamps: 'apply', Text: 'apply' };
 window.addEventListener('keydown', (e) => {
-  if (busy || e.isComposing || document.querySelector('dialog[open], #slice-details:popover-open')) return;
+  if (heldFillKey && (e.code || e.key) !== heldFillKey && !e.repeat) stopFillAngleRepeat();
+  if (busy || e.isComposing || document.querySelector('dialog[open], :popover-open')) return;
   const k = e.key.toLowerCase(),
     ctrl = e.ctrlKey || e.metaKey;
+  if (k === 'enter' && !ctrl && !e.altKey && !e.shiftKey && !e.defaultPrevented) {
+    const apply = $(applyButtonByTool[tool]);
+    if (!apply || e.target.isContentEditable ||
+        e.target.matches('textarea, select, input:not([type=number],[type=range],[type=checkbox])')) return;
+    const button = e.target.closest('button');
+    if (button && button !== apply && !button.matches('[aria-pressed="true"][data-tool], [aria-pressed="true"][data-swatch], .stamp-choice[aria-pressed="true"]')) return;
+    e.preventDefault();
+    if (e.repeat) return;
+    if (placingArtwork() && previewFrame && !draggingArtwork) updatePreview();
+    apply.click();
+    return;
+  }
+  if (k === 'backspace' && lasso && !ctrl && !e.altKey && !e.shiftKey && !e.defaultPrevented &&
+      !e.target.isContentEditable && !e.target.matches('textarea, select, input:not([type=checkbox],[type=range])')) {
+    e.preventDefault();
+    if (!e.repeat) removeLastLassoNode();
+    return;
+  }
   if (k === 'escape' && pickingFace) {
     e.preventDefault();
     setFacePicking(false);
     v.canvas.focus({ preventScroll: true });
     return;
   }
-  if (k === 'escape' && placingArtwork()) {
+  if (k === 'escape' && lasso) {
+    e.preventDefault();
+    cancelLasso();
+    notify('Lasso canceled');
+    v.canvas.focus({ preventScroll: true });
+    return;
+  }
+  if (k === 'escape' && (placingArtwork() || tool === 'Fill Gaps')) {
     e.preventDefault();
     if (tool === 'Stamps') anchor = null;
     chooseTool('Brush');
+    v.canvas.focus({ preventScroll: true });
+    return;
+  }
+  if (tool === 'Band' && bandPending && k === 'escape') {
+    e.preventDefault();
+    cancelBand();
     v.canvas.focus({ preventScroll: true });
     return;
   }
@@ -1367,25 +1899,28 @@ window.addEventListener('keydown', (e) => {
   if (tool === 'Fill' && !e.altKey && (k === '[' || k === ']') &&
       !e.target.isContentEditable && !e.target.matches('input:not([type=range],[type=checkbox])')) {
     e.preventDefault();
-    const angle = $('angle'), previous = angle.value;
-    if (k === '[') angle.stepDown(5);
-    else angle.stepUp(5);
-    if (angle.value !== previous) angle.dispatchEvent(new Event('input', { bubbles: true }));
+    startFillAngleRepeat(e);
     return;
   }
   if (e.target.matches('input,select') && !e.target.matches('input[type=range]')) return;
-  if ('bfest'.includes(k) && k.length === 1) {
+  if (/^[0-9]$/.test(k) && !e.altKey && !e.shiftKey && !e.target.isContentEditable && !e.defaultPrevented) {
+    const button = document.querySelector(`[data-swatch][aria-keyshortcuts="${k}"]`);
+    if (button && !e.repeat) {
+      e.preventDefault();
+      revealPanel(button.closest('#palette, #mixed-colors').id);
+      button.scrollIntoView({block: 'nearest', container: 'nearest'});
+      button.click();
+    }
+    return;
+  }
+  if (toolByKey.has(k)) {
     e.preventDefault();
-    chooseTool({ b: 'Brush', f: 'Fill', e: 'Eraser', s: 'Stamps', t: 'Text' }[k]);
+    chooseTool(toolByKey.get(k));
+    if (tool !== 'Text') v.canvas.focus({ preventScroll: true });
   }
   if (k === 'home') {
     e.preventDefault();
     $('fit').click();
-  }
-  if (k === 'enter' && placingArtwork() && !e.target.matches('button')) {
-    e.preventDefault();
-    if (previewFrame && !draggingArtwork) updatePreview();
-    $('apply').click();
   }
   if (tool !== 'Fill' && (k === '[' || k === ']')) {
     sizes.brush.step(k === '[' ? -1 : 1);
@@ -1393,7 +1928,9 @@ window.addEventListener('keydown', (e) => {
 });
 async function start() {
   v = new Viewport($('viewport'), (view) => {
+    cancelLasso();
     refreshFillHover();
+    if (tool === 'Fill Gaps') renderGaps();
     $('view').value = view;
     refreshBrushCursor();
     schedulePreview();
