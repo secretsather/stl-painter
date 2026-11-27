@@ -36,16 +36,95 @@ Choose **Project → Clear all paint** in the header to reset unlocked paint to 
 
 To paint straight onto an angled face, click **Align to face** in the camera toolbar, then click the polygon. The camera centers on that point and looks straight at the face. Your painting tool resumes immediately. Press **Esc** to cancel before selecting a face.
 
-| Tool | How to use it |
-| --- | --- |
-| **Brush** | Drag to paint the visible surface. Set **Diameter** in pixels or millimeters. |
-| **Fill** | Hover over a face to see which area will change. Click to fill the highlighted region with the selected color. **Edge angle** controls how sharp an edge the fill can cross. **Respect paint boundaries** stops the fill at an existing color change. |
-| **Fill Gaps** | Press **G** to preview pinholes. **Maximum gap size** (default **0.5 mm**) measures the widest span of a patch enclosed by one swatch. Turn on **Include thin seams** to also fill narrow strips with the same solid color or saved mix on both sides. For seams, the threshold measures across the connected surface, and wider sections stay intact. Locked paint and open edges are skipped. Click **Apply** to commit the preview in one undoable edit, or press **Esc** to cancel. |
-| **Fill Band** | Press **H** and choose **Bottom to top (Z)**, **Left to right (X)**, or **Front to back (Y)**. The default is Z. **From** and **To** are measured in millimeters from the model’s bottom, left, or front edge respectively. Click two bounds in either order or enter them directly. Click beyond an end of the model to include that edge. Orbit to inspect the preview, then choose **Apply band** to paint the unlocked surfaces within it. **Esc** cancels the preview. |
-| **Fill Lasso** | Press **L** and position the view. Click on the model or background to place the first node and lock the camera. A smooth curve passes through each node. Move the pointer to preview the next arc, then click to place it. After placing at least three nodes, click the first node again to close the loop and preview the fill. **Refine stroke edges** follows the curve across coarse triangles. Click **Apply lasso** to paint the visible, unlocked area in one undoable edit, or press **Esc** to cancel. Either action releases the camera. |
-| **Stamps** | Select **Import artwork** for a PNG, JPEG, WebP, or BMP. Choose existing palette colors or add colors from the image, then click **Add to stamps**. Adjust width and rotation, drag into position, and click **Apply stamp**. |
-| **Text** | Type a label, choose an installed font and palette color, and set size, bold, italic, or multiline alignment. Position it and click **Apply text**. The project stores applied lettering as surface paint. |
-| **Eraser** | Drag to restore the base color. Brush and Eraser share the **Refine stroke edges** setting. |
+### Brush
+
+Drag to paint the visible surface. Set **Diameter** in pixels or millimeters.
+
+<details>
+<summary>See Brush in action</summary>
+
+![A brush paints a curved teal stroke across a cream fluted vessel.](docs/demos/brush.gif)
+
+</details>
+
+### Fill
+
+Hover over a face to see which area will change. Click to fill the highlighted region with the selected color. **Edge angle** controls how sharp an edge the fill can cross. **Respect paint boundaries** stops the fill at an existing color change.
+
+<details>
+<summary>See Fill in action</summary>
+
+![Hovering highlights a connected region below a stripe. A click fills that region with teal.](docs/demos/fill.gif)
+
+</details>
+
+### Fill Gaps
+
+Press **G** to preview pinholes. **Maximum gap size** (default **0.5 mm**) measures the widest span of a patch enclosed by one swatch. Turn on **Include thin seams** to also fill narrow strips with the same solid color or saved mix on both sides. For seams, the threshold measures across the connected surface, and wider sections stay intact. Locked paint and open edges are skipped. Click **Apply** to commit the preview in one undoable edit, or press **Esc** to cancel.
+
+<details>
+<summary>See Fill Gaps in action</summary>
+
+![Three cream pinholes appear on a teal surface. The scan outlines them and Apply fills them with the surrounding teal.](docs/demos/fill-gaps.gif)
+
+</details>
+
+### Fill Band
+
+Press **H** and choose **Bottom to top (Z)**, **Left to right (X)**, or **Front to back (Y)**. The default is Z. **From** and **To** are measured in millimeters from the model’s bottom, left, or front edge respectively. Click two bounds in either order or enter them directly. Click beyond an end of the model to include that edge. Orbit to inspect the preview, then choose **Apply band** to paint the unlocked surfaces within it. **Esc** cancels the preview.
+
+<details>
+<summary>See Fill Band in action</summary>
+
+![Two clicks set the bounds of a horizontal band. The preview wraps around the vessel and Apply paints the band.](docs/demos/fill-band.gif)
+
+</details>
+
+### Fill Lasso
+
+Press **L** and position the view. Click on the model or background to place the first node and lock the camera. A smooth curve passes through each node. Move the pointer to preview the next arc, then click to place it. Backspace removes the last node. After placing at least three nodes, click the first node again to close the loop and preview the fill. **Refine stroke edges** follows the curve across coarse triangles. Click **Apply lasso** to paint the visible, unlocked area in one undoable edit, or press **Esc** to cancel. Either action releases the camera.
+
+<details>
+<summary>See Fill Lasso in action</summary>
+
+![Clicks place nodes along a curved outline. Backspace removes a node, and closing and applying the loop paints the enclosed surface.](docs/demos/fill-lasso.gif)
+
+</details>
+
+### Stamps
+
+Select **Import artwork** for a PNG, JPEG, WebP, or BMP. Choose existing palette colors or add colors from the image, then click **Add to stamps**. Adjust width and rotation, drag into position, and click **Apply stamp**.
+
+<details>
+<summary>See Stamps in action</summary>
+
+![A flower from the stamp library is positioned on the vessel and applied to its curved surface.](docs/demos/stamps.gif)
+
+</details>
+
+### Text
+
+Type a label, choose an installed font and palette color, and set size, bold, italic, or multiline alignment. Position it and click **Apply text**. The project stores applied lettering as surface paint.
+
+<details>
+<summary>See Text in action</summary>
+
+![Typing CLAY previews lettering on the vessel. The lettering is dragged into position and applied.](docs/demos/text.gif)
+
+</details>
+
+### Eraser
+
+Drag to restore the base color. Brush and Eraser share the **Refine stroke edges** setting.
+
+<details>
+<summary>See Eraser in action</summary>
+
+![Dragging the eraser through teal paint exposes a curved stripe of the cream base color.](docs/demos/eraser.gif)
+
+</details>
+
+## Brush and artwork settings
 
 **Physical sizing.** Select **mm** beside Diameter, Font size, or Width and type a measurement. A 2 mm brush and an 8 mm stamp keep their size as you zoom. Brush and Eraser share a diameter. Stamp width includes transparent margins. Font size is the font’s em size, so the visible height depends on the letters and font. Measurements use one STL coordinate unit per millimeter and apply in the view plane at the surface under the cursor or artwork center. Face a flat surface straight on to reproduce a dimension along it. Select **px** for a fixed size on screen.
 

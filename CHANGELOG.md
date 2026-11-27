@@ -2,6 +2,8 @@
 
 ## What's new in 1.0.13
 
+[Watch the eight painting tool demos in the README](README.md#painting-tools).
+
 - **Fill Lasso (L)** paints the visible surface inside a smooth curve. Position the camera, then click to place nodes. Backspace removes the last node, even from a closed preview. Click the first node to close the loop and press Enter to apply.
 - **Fill Band (H)** paints between two positions along X, Y, or Z. Click the bounds in either order, including beyond the model, or enter exact millimeters. Inspect the preview before applying.
 - **Fill Gaps (G)** finds small patches surrounded by one color or mix. Set a maximum size in millimeters and enable **Include thin seams** to look for narrow strips with matching paint on both sides. Apply the preview in one undoable edit.
@@ -21,8 +23,6 @@
 - **Pick a mix by color.** Click a suggested swatch to set its filaments and percentages. The picker shows up to 90 suggestions across the palette, and you can still enter a custom recipe.
 - **Start painting again from the base color.** Click **Clear all paint** to erase the model, including applied stamps and lettering. One **Undo** restores the painting.
 - Opening large models, saving projects, exporting 3MFs, and matching stamp colors now run in the background. Refined strokes and undo update the affected mesh sections, and Fill reuses connectivity across edits.
-
-For timings, memory measurements, and test conditions, see the [performance review](docs/performance-review.md).
 
 ## What's new in 1.0.9
 
