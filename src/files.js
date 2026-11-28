@@ -1,5 +1,7 @@
 import { validColor, validatedPalette } from './palette-file.js';
 import { validSplits } from './paint-tree.js';
+import { validSeams } from './seam-geometry.js';
+import { suggestedPauseHeight } from './swap-plan.js';
 import { exportFilaments, MAX_FILAMENTS, MAX_SWATCHES } from './mixes.js';
 import { Zip, ZipDeflate, zipSync, unzipSync, strToU8, strFromU8 } from 'fflate';
 import { checkFaceLimit, MAX_CELLS } from './mesh.js';
@@ -10,7 +12,8 @@ export function writeProject(p) {
   const mixed = Object.keys(p.mixes ?? {}).length > 0;
   const files = {
     'project.json': json({
-      version: mixed ? 4 : p.splits ? 2 : 1,
+      version: p.seams?.length ? 5 : mixed ? 4 : p.splits ? 2 : 1,
+      ...(p.seams?.length && {seams: p.seams, mixes: p.mixes ?? {}, hasSplits: !!p.splits}),
       ...(mixed && { mixes: p.mixes, hasSplits: !!p.splits }),
       name: p.name,
       palette: p.palette,
@@ -63,7 +66,7 @@ export function readProject(input) {
     return files[key] || fail();
   }
   const m = JSON.parse(strFromU8(get('project.json')));
-  if (![1, 2, 3, 4].includes(m.version))
+  if (![1, 2, 3, 4, 5].includes(m.version))
     throw Error('This project requires a different version of STL Painter.');
   if (
     typeof m.name !== 'string' ||
@@ -102,6 +105,7 @@ export function readProject(input) {
     faces.some((i) => i >= vertices.length / 3) ||
     depth.some((d) => d > 8) ||
     paint.length > MAX_CELLS ||
+    (m.version === 5 && !validSeams(m.seams, depth.length, roots)) ||
     (splits ? !validSplits(splits, roots, paint.length) : paint.length !== roots) ||
     paint.some((c) => c >= m.palette.length)
   )
@@ -144,6 +148,7 @@ export function readProject(input) {
     palette,
     stamps,
     ...(m.version >= 3 && { mixes: m.mixes }),
+    ...(m.version === 5 && {seams: m.seams}),
     ...(m.editingContext && typeof m.editingContext === 'object' && { editingContext: m.editingContext }),
     ...(splits && { splits }),
   };
@@ -178,8 +183,20 @@ function xml(s) {
     (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c]
   );
 }
-export function stream3MF(p, write) {
-  const { colors, slots, definitions } = exportFilaments(p);
+function pauseMarkers({plan, bottom, palette}) {
+  const layers = plan.pauses.map(pause => {
+    const message = pause.swaps.map(({head, from, to}) =>
+      `Head ${head + 1}: Color ${from + 1} (${palette[from]}) to Color ${to + 1} (${palette[to]})`
+    ).join('; ');
+    // PausePrint (1) uses the printer profile's pause command when sliced.
+    return `<layer top_z="${suggestedPauseHeight(pause, bottom)}" type="1" extruder="0" color="" extra="${xml(message)}"/>`;
+  });
+  return '<custom_gcodes_per_layer><plate><plate_info id="1"/>' + layers.join('') +
+    '<mode value="MultiExtruder"/></plate></custom_gcodes_per_layer>';
+}
+
+export function stream3MF(p, write, swapSheet) {
+  const { colors, slots, definitions } = exportFilaments(p, swapSheet?.plan.heads);
   const header = '<?xml version="1.0" encoding="UTF-8"?>';
   const zip = new Zip((error, chunk) => {
     if (error) throw error;
@@ -243,7 +260,7 @@ export function stream3MF(p, write) {
   const metadata = {
     '[Content_Types].xml': strToU8(
       header +
-        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/><Default Extension="config" ContentType="application/octet-stream"/></Types>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/><Default Extension="config" ContentType="application/octet-stream"/><Default Extension="xml" ContentType="application/xml"/></Types>'
     ),
     '_rels/.rels': strToU8(
       header +
@@ -259,6 +276,9 @@ export function stream3MF(p, write) {
         '"/><metadata key="extruder" value="1"/></part></object><plate><metadata key="plater_id" value="1"/><model_instance><metadata key="object_id" value="1"/><metadata key="instance_id" value="0"/></model_instance></plate></config>'
     ),
   };
+  if (swapSheet?.plan.pauses.length) {
+    metadata['Metadata/custom_gcode_per_layer.xml'] = strToU8(header + pauseMarkers(swapSheet));
+  }
   for (const [name, data] of Object.entries(metadata)) {
     const entry = new ZipDeflate(name, { level: 4 });
     zip.add(entry);

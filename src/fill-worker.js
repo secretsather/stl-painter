@@ -2,7 +2,8 @@ import { FillIndex } from './fill-index.js';
 import { flood } from './mesh.js';
 import { findGaps } from './fill-gaps.js';
 
-let index, surface = {}, paint, positions;
+import { seamPairs } from './seam-geometry.js';
+let index, surface = {}, paint, positions, blocked, seamData, splits = [];
 self.onmessage = ({ data }) => {
   const { id, mesh, ranges, changes } = data;
   try {
@@ -14,6 +15,9 @@ self.onmessage = ({ data }) => {
       }
       surface.owners = data.owners;
       surface.graph = index.update(ranges, changes);
+      for (const change of changes) splits[change.index] = change.splits;
+      blocked = null;
+      seamData = data.seams?.length ? {seams:data.seams,ranges} : null;
       self.postMessage({ id });
     } else if (data.gapPaint) {
       positions = data.positions ?? positions;
@@ -23,6 +27,9 @@ self.onmessage = ({ data }) => {
     } else {
       if (data.paint) paint = data.paint;
       const mask = new Uint8Array(paint.length);
+      if (data.stopAtSeams && seamData && !blocked)
+        blocked = seamPairs(index.mesh, seamData.seams, seamData.ranges, splits, surface.graph);
+      surface.blocked = data.stopAtSeams ? blocked : null;
       flood({ paint, lockedSlots: data.lockedSlots }, surface, data.seed, data.angle, data.protect, mask);
       self.postMessage({ id, value: mask }, [mask.buffer]);
     }

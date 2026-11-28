@@ -143,6 +143,9 @@ header {
   box-shadow: 0 4px 16px #20312524;
 }
 #project-menu button {
+  display: flex;
+  width: 100%;
+  justify-content: flex-start;
   border: 0;
   white-space: nowrap;
 }
@@ -279,7 +282,8 @@ main {
 #tool-shortcuts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 18px; }
 .shortcut { display: inline-flex; align-items: center; gap: 7px; }
 .shortcut svg { width: 18px; height: 18px; display: block; stroke-width: 1.8; }
-#viewport:has([data-tool='Fill Lasso'][aria-pressed='true']) > canvas { cursor: crosshair; }
+#viewport:has([data-tool='Fill Lasso'][aria-pressed='true'], [data-tool='Seam'][aria-pressed='true']) > canvas { cursor: crosshair; }
+#remove-seam { margin-top: 6px; }
 .model-label {
   position: absolute;
   top: 26px;
@@ -435,6 +439,8 @@ h1 {
   padding: 10px 18px;
   border-radius: 7px;
 }
+#repair-choice { width: min(460px, 90vw); }
+#repair-detail { overflow-wrap: anywhere; line-height: 1.5; }
 aside {
   display: flex;
   flex-direction: column;
@@ -450,6 +456,10 @@ aside {
   padding: 19px 21px;
   border-bottom: 1px solid var(--line);
 }
+.tool-panel:has(#seam-panel:not([hidden])) {
+  height: var(--seam-selection-height, auto);
+  overflow: auto;
+}
 .section-head,
 .dialog-head {
   display: flex;
@@ -463,14 +473,14 @@ h2 {
   margin: 0;
   font-weight: 650;
 }
-#palette, #mixed-colors {
+#palette, #mixed-colors, #seam-list {
   display: flex;
   flex-direction: column;
   gap: 3px;
   max-height: 250px;
   overflow-y: auto;
 }
-.swatch-row {
+.swatch-row, .seam-row {
   display: flex;
   align-items: center;
   border: 1px solid transparent;
@@ -487,7 +497,9 @@ h2 {
   position-anchor: --slice-status;
   inset: auto auto calc(anchor(top) + 6px) anchor(left);
   margin: 0;
-  width: 260px;
+  width: min(330px, calc(100vw - 32px));
+  max-height: min(65vh, 520px);
+  overflow-y: auto;
   padding: 12px;
   background: var(--paper);
   color: inherit;
@@ -560,7 +572,12 @@ h2 {
   flex-wrap: wrap;
   gap: 3px 8px;
 }
-#color-limit-colors span::before {
+.slice-swatch {
+  display: inline-block;
+  white-space: nowrap;
+  margin-right: 3px;
+}
+.slice-swatch::before {
   content: '';
   display: inline-block;
   width: 9px;
@@ -570,7 +587,25 @@ h2 {
   background: var(--swatch);
   box-shadow: inset 0 0 0 1px #0002;
 }
-.swatch-row:hover { background: #edf1e9; }
+.swap-plan {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+}
+.swap-plan h3, .swap-plan h4 { margin: 0 0 6px; font-size: inherit; }
+.swap-plan table { width: 100%; margin: 6px 0 10px; border-collapse: collapse; }
+.swap-plan th, .swap-plan td { padding: 3px 5px 3px 0; text-align: left; vertical-align: top; }
+.swap-plan th, .swap-plan p { color: var(--muted); font-size: 12px; }
+.swap-plan ol { padding-left: 22px; margin: 0; }
+.swap-plan li { margin: 5px 0 8px; }
+.swap-plan p { margin: 6px 0 0; }
+.swatch-row:hover, .seam-row:hover { background: #edf1e9; }
+.seam-entry { display: flex; align-items: center; }
+.seam-entry input { width: 100%; min-width: 0; min-height: 34px; }
+.seam-row { justify-content: space-between; min-width: 0; flex: 1; }
+.seam-row span:first-child { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.seam-row span:last-child { color: var(--muted); font-size: 12px; flex: none; }
 .palette-actions { display: flex; gap: 4px; }
 .section-head .panel-toggle {
   padding: 0;
@@ -635,7 +670,7 @@ h2 {
 .mix-part { display: grid; grid-template-columns: minmax(0, 1fr) 72px auto; gap: 8px; align-items: center; margin: 7px 0; }
 .mix-part input { min-width: 0; width: 100%; padding: 5px; }
 #mix-preview { display: flex; gap: 8px; align-items: center; }
-.swatch-row:has([aria-pressed='true']) {
+.swatch-row:has([aria-pressed='true']), .seam-row[aria-pressed='true'] {
   background: #e3ebdc;
   border-color: #c8d6bd;
 }
@@ -905,6 +940,10 @@ dialog::backdrop {
 dialog h2 {
   font-size: 19px;
 }
+#export-dialog { width: min(430px, 90vw); max-height: 85vh; overflow: auto; }
+#export-dialog .check { margin-top: 14px; }
+#export-dialog .hint { margin: 4px 0 8px; }
+#export-dialog #export-status { font-size: 13px; }
 dialog .dialog-head {
   margin-bottom: 8px;
 }

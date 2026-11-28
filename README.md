@@ -2,7 +2,7 @@
 
 STL Painter is an offline Windows desktop app for preparing multicolor 3D prints. Open an STL, paint the surface, add a logo or lettering, and export a color-painted 3MF for your slicer. Save a painter project if you want to come back and edit it later.
 
-**[Download STL Painter 1.0.15 for Windows (64-bit portable ZIP)](https://github.com/secretsather/stl-painter/releases/download/v1.0.15/STL-Painter-1.0.15-Windows-x64.zip)**
+**[Download STL Painter 1.1.0 for Windows (64-bit portable ZIP)](https://github.com/secretsather/stl-painter/releases/download/v1.1.0/STL-Painter-1.1.0-Windows-x64.zip)**
 
 [What's new in STL Painter](CHANGELOG.md)
 
@@ -20,11 +20,11 @@ Keep your saved projects in a separate folder. To update a portable copy, extrac
 
 ## Paint your first model
 
-1. **Open a model.** Try painting Juniper, the four-color fox aviator, or click **Open** and choose a binary or ASCII `.stl`. The upper-left readout shows X, Y, and Z dimensions in millimeters.
+1. **Open a model.** Try painting Juniper, the four-color fox aviator, or click **Open** and choose a binary or ASCII `.stl`. Juniper starts with closed seams around the tail tip and both ear tips. To try one, choose **Fill**, enable **Stop at seams**, and click inside the loop. The upper-left readout shows X, Y, and Z dimensions in millimeters.
 2. **Choose a color.** Click a palette row to paint with that color. Click its colored square to change the color itself. **Color 1** is the base exposed by the eraser.
-3. **Paint the surface.** Choose **Brush** and left-drag across the model. Right-drag to orbit, hold the mouse wheel and drag to pan, and scroll to zoom. Click a face of the view cube to work straight on.
+3. **Paint the surface.** Choose **Brush** and left-drag across the model. Right-drag on a detail to orbit around that spot, or start in empty space to keep the current pivot. Hold the mouse wheel and drag to pan, and scroll to zoom. Click a face of the view cube to work straight on.
 4. **Save your work.** Click **Save** to write a self-contained `.stlp` with the model, paint, palette, and stamp library. Use **Ctrl+Shift+S** to save a separate copy.
-5. **Export for printing.** Apply any pending stamp or text, then click **Export (3MF)**. For solid colors, you can import the 3MF into your existing plate. If you painted with mixed colors, open it as a project in a slicer that supports mixed filaments so the recipes load. Check the filament assignments before slicing.
+5. **Export for printing.** Apply any pending stamp or text, then click **Export (3MF)**. Choose **Full color** to keep the original filament assignments, or **Limit to printer heads** to share slots and save a companion PDF. If you painted with mixed colors, open the 3MF as a project in a slicer that supports mixed filaments so the recipes load. Check the filament assignments before slicing.
 
 ## Painting tools
 
@@ -33,6 +33,8 @@ Keep your saved projects in a separate folder. To update a portable copy, extrac
 Click the **padlock** beside a solid color or saved mix to protect surfaces painted with that swatch. For example, lock gold trim and brush across its edge to paint the surrounding area. Fill stops at locked paint, and painting, erasing, stamps, lettering, and Fill Band skip it. Click the padlock again to unlock it. Locks are saved with the painter project.
 
 Choose **Project → Clear all paint** in the header to reset unlocked paint to **Color 1**, including applied stamps and text. Your palette and stamp library stay available. Press **Ctrl+Z** to restore the previous paint in one step.
+
+Choose **Project → Repair STL** to check the current model’s geometry. Review the findings and any warning about affected paint before choosing **Apply repair**. One **Undo** restores the original geometry and paint.
 
 To paint straight onto an angled face, click **Align to face** in the camera toolbar, then click the polygon. The camera centers on that point and looks straight at the face. Your painting tool resumes immediately. Press **Esc** to cancel before selecting a face.
 
@@ -90,6 +92,21 @@ Press **L** and position the view. Click on the model or background to place the
 <summary>See Fill Lasso in action</summary>
 
 ![Lasso nodes trace a chevron on Juniper’s tail. Backspace removes a node before the loop is closed and filled with cream.](docs/demos/juniper-fill-lasso.gif)
+
+</details>
+
+### Seam
+
+Press **M**, then hold the left mouse button on the model and move the node into position. The yellow line previews the path from the previous node as you move. Release on the surface to place it. A quick click also places a node. Releasing over empty space discards that placement. **Smooth seam** is on by default. The third node rounds the path through the middle node, like Fill Lasso. Turn it off for straight segments. Orbit, pan, zoom or use the view cube between placements. Changing the view fixes the path drawn so far on the model. Keep the previous node and the surface between placements in view. Drag a placed node to adjust the path.
+
+To close a loop, guide it back to its first node and click that node. **Enter** or **Apply seam** splits the triangles along the displayed line and keeps open ends open. **Backspace** steps back and **Esc** cancels the draft.
+
+In **Fill**, enable **Stop at seams** to preview and paint one side. Fill can travel around an open end. Switch to **Seam** to see the saved guides and the **Seams** list below the tool controls. **Show seams** toggles the saved guides while you work. Each row shows the seam’s name and whether it is open or closed. Click a row to edit or remove that seam, or click **+** to start a new one. To rename a seam, double-click its name (or focus its row and press **F2**). Type the new name and press **Enter** to save or **Esc** to cancel.
+
+<details>
+<summary>See Seam in action</summary>
+
+![A yellow line follows a dragged seam node on Juniper’s tail. The loop is closed and applied, then Stop at seams confines a cream fill to the new marking.](docs/demos/juniper-seam.gif)
 
 </details>
 
@@ -152,7 +169,13 @@ The horizontal slice check counts the physical filaments in each painted recipe.
 
 A project can have **1–16 physical filament colors** and up to **255 total swatches** including mixes. Use **+** to add one or **×** to remove one. If the color is in use, choose a replacement for the model and saved stamps. Removing the base color lets you choose a new base. The last color stays in the palette. **Ctrl+Z** restores a removed color or stamp during the current editing session.
 
-For a four-filament printer, click **Slice colors** in the lower-left of the viewport and set **Colors per horizontal slice** to **4**. A fifth color at the same height triggers a red warning triangle. Click it to see the colors involved and an example height. You can use more than four colors across the whole model if each horizontal slice stays within your limit.
+For a four-head printer, click **Slice colors** in the lower-left of the viewport and set **Colors per horizontal slice** to **4**. A fifth filament at the same height triggers a red warning triangle. Click it to see the colors involved and an example height.
+
+The **Toolhead swap plan** shows which physical colors to load first, which share each head, and when to swap them. Pause windows are in millimeters above the model base. Swaps with a common window can be done together. If a color comes back higher on the model, the plan includes the return swap. When overlapping colors prevent a fixed head assignment, the panel reports it.
+
+In **Export (3MF) → Limit to printer heads**, choose the available head count (initially the Slice colors limit, or four when it is off). Review the plan and choose a save location. The 3MF uses the starting spool color for each assigned head, including regions that change spool later. A file named `<model> - swap plan.pdf` beside the 3MF lists the original spool numbers, color swatches, and every swap. Full-color export remains available if a head limit cannot accommodate the paint.
+
+Open the exported 3MF as a project in Snapmaker Orca. Each planned swap has a suggested pause marker at the midpoint of its window. Keep the same print orientation and map each slot to the corresponding printer head. Slice and compare the pause layers in **Preview** with the windows in the PDF. Check that the outgoing filament has finished and the incoming filament has yet to start, including supports and infill. If a marker falls on the wrong layer, adjust it and re-slice. A narrow window may require a finer layer height.
 
 The limit defaults to four, accepts 1–16 or **Off**, and is remembered on this computer. The check uses committed surface paint, including the base color. Your slicer determines the final tool changes, infill, and supports.
 
@@ -162,14 +185,14 @@ The limit defaults to four, accepts 1–16 or **Off**, and is remembered on this
 
 | Action | Control |
 | --- | --- |
-| Brush / Fill / Fill Gaps / Fill Band / Fill Lasso / Stamps / Text / Eraser | B / F / G / H / L / S / T / E |
+| Brush / Fill / Fill Gaps / Fill Band / Fill Lasso / Seam / Stamps / Text / Eraser | B / F / G / H / L / M / S / T / E |
 | Pick a painted color or mix | Alt + left click |
 | Select a swatch in sidebar order (solid colors first, then saved mixes) | **1–9** select the first nine. **0** selects the tenth. |
 | Orbit / pan / zoom | Right-drag / middle-drag / scroll |
 | Fit the model in the studio view | Home |
 | Change brush or eraser diameter | [ and ] |
 | Decrease / increase the Fill edge angle while previewing | Tap [ or ] for 1°. Hold to repeat after a short pause. |
-| Apply a ready Fill Band, Fill Gaps, Fill Lasso, stamp, or text preview | **Enter** or **numpad Enter**. In the text editor, Enter starts a new line. |
+| Apply a ready Fill Band, Fill Gaps, Fill Lasso, seam, stamp, or text preview | **Enter** or **numpad Enter**. In the text editor, Enter starts a new line. |
 | Remove the last Fill Lasso node, including from a closed preview | Backspace |
 | Cancel placement and return to Brush | Esc |
 | Undo / redo | Ctrl+Z / Ctrl+Y or Ctrl+Shift+Z |

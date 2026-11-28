@@ -3,6 +3,7 @@ dist/
 release/
 .local/
 /AGENTS.md
+/docs/WISHLIST.md
 /test/
 
 # User models, painter projects, exports, and temporary saves.

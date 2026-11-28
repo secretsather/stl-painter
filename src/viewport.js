@@ -39,6 +39,7 @@ export class Viewport {
       minFilter: T.NearestFilter,
       magFilter: T.NearestFilter,
       generateMipmaps: false,
+      depthTexture: new T.DepthTexture(1, 1, T.UnsignedIntType),
     });
     this.paintMaterial = new T.MeshStandardMaterial({
       vertexColors: true,
@@ -94,10 +95,41 @@ export class Viewport {
     this.controls = new OrbitControls(this.camera, this.canvas);
     this.controls.enableDamping = false;
     this.controls.mouseButtons = { LEFT: null, MIDDLE: T.MOUSE.PAN, RIGHT: T.MOUSE.ROTATE };
-    this.controls.addEventListener('change', () => this.changed());
+    // Keep the orbit pivot separate from the point at the center of the image.
+    // Storing their difference also lets both points travel together during a pan.
+    this.pivotOffset = new T.Vector3();
+    this.canvas.addEventListener('pointerdown', (e) => this.beginSurfaceOrbit(e));
+    this.controls.addEventListener('end', () => { this.surfaceOrbit = null; });
+    this.controls.addEventListener('change', () => {
+      if (this.surfaceOrbit) this.applySurfaceOrbit();
+      this.changed();
+    });
     this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     new ResizeObserver(() => this.resize()).observe(host);
     this.resize();
+  }
+  beginSurfaceOrbit(e) {
+    if (!this.tree || !this.controls.enabled || !this.controls.enableRotate ||
+        !e.isPrimary || e.pointerType === 'touch' || e.button !== 2 ||
+        e.ctrlKey || e.metaKey || e.shiftKey) return;
+    const rect = this.canvas.getBoundingClientRect();
+    const hit = this.surfaceHit({
+      x: (e.clientX - rect.left) * this.w / rect.width,
+      y: (e.clientY - rect.top) * this.h / rect.height,
+    });
+    const target = this.controls.target;
+    const pivot = hit?.point ?? target.clone().add(this.pivotOffset);
+    const localOffset = pivot.clone().sub(target).applyQuaternion(this.camera.quaternion.clone().invert());
+    this.surfaceOrbit = { pivot, localOffset };
+  }
+  applySurfaceOrbit({ pivot, localOffset } = this.surfaceOrbit) {
+    // OrbitControls has rotated around the view center. Translate the camera
+    // and its aim together so the clicked point retains its camera coordinates.
+    this.pivotOffset.copy(localOffset).applyQuaternion(this.camera.quaternion);
+    const aim = pivot.clone().sub(this.pivotOffset);
+    this.camera.position.sub(this.controls.target).add(aim);
+    this.controls.target.copy(aim);
+    this.camera.updateMatrixWorld();
   }
   setProject(p, prepared) {
     if (this.grid) {
@@ -181,6 +213,7 @@ export class Viewport {
       return owners;
     } });
     this.pickCache = this.lastChunk = null;
+    this.pickTargetValid = false;
     this.draw();
   }
 
@@ -395,6 +428,7 @@ export class Viewport {
     return {
       position: this.camera.position.toArray(),
       target: this.controls.target.toArray(),
+      ...(this.pivotOffset.lengthSq() > 0 && { pivot: this.controls.target.clone().add(this.pivotOffset).toArray() }),
       projection: this.camera.isOrthographicCamera ? 'ortho' : 'perspective',
       ...(this.camera.isOrthographicCamera && { half: this.half, zoom: this.camera.zoom }),
     };
@@ -416,6 +450,9 @@ export class Viewport {
       this.updateProjection();
     }
     this.controls.target.fromArray(state.target);
+    this.surfaceOrbit = null;
+    this.pivotOffset.set(0, 0, 0);
+    if (validPoint(state.pivot)) this.pivotOffset.fromArray(state.pivot).sub(this.controls.target);
     this.camera.position.fromArray(state.position);
     this.controls.update();
     this.changed();
@@ -424,6 +461,8 @@ export class Viewport {
     if (!this.center) return;
     const distance = this.span * 1.75 * Math.max(1, this.h / this.w);
     this.controls.target.copy(this.center);
+    this.surfaceOrbit = null;
+    this.pivotOffset.set(0, 0, 0);
     this.controls.minDistance = this.span * 0.015;
     this.controls.maxDistance = this.span * 18;
     this.controls.minZoom = 0.08;
@@ -434,7 +473,10 @@ export class Viewport {
     this.orient(view, distance);
   }
   orient(view, distance = this.camera.position.distanceTo(this.controls.target)) {
+    const pivot = this.controls.target.clone().add(this.pivotOffset);
+    const localOffset = this.pivotOffset.clone().applyQuaternion(this.camera.quaternion.clone().invert());
     this.lookFrom(viewDirections[view].clone(), distance);
+    this.applySurfaceOrbit({ pivot, localOffset });
   }
   alignToFace(point) {
     const hit = this.surfaceHit(point);
@@ -443,6 +485,8 @@ export class Viewport {
     if (normal.dot(this.raycaster.ray.direction) > 0) normal.negate();
     const distance = this.camera.position.distanceTo(this.controls.target);
     this.controls.target.copy(hit.point);
+    this.surfaceOrbit = null;
+    this.pivotOffset.set(0, 0, 0);
     this.lookFrom(normal, distance);
     return true;
   }
@@ -455,6 +499,7 @@ export class Viewport {
   }
   changed() {
     this.pickCache = null;
+    this.pickTargetValid = false;
     this.draw();
     this.onView?.(this.cube.update(this.camera));
   }
@@ -462,18 +507,25 @@ export class Viewport {
     if (this.frame) return;
     this.frame = requestAnimationFrame(() => {
       this.frame = 0;
+      if (this.hasVisibleSeams?.()) this.renderPickTarget();
       this.renderer.render(this.scene, this.camera);
     });
   }
-  picks() {
-    if (this.pickCache) return this.pickCache;
-    const { renderer, w, h } = this;
+  renderPickTarget() {
+    if (this.pickTargetValid) return;
+    const { renderer } = this;
     renderer.setRenderTarget(this.target);
     renderer.setClearColor(0, 1);
     renderer.render(this.pickScene, this.camera);
+    renderer.setRenderTarget(null);
+    this.pickTargetValid = true;
+  }
+  picks() {
+    if (this.pickCache) return this.pickCache;
+    this.renderPickTarget();
+    const { renderer, w, h } = this;
     const rgba = new Uint8Array(w * h * 4);
     renderer.readRenderTargetPixels(this.target, 0, 0, w, h, rgba);
-    renderer.setRenderTarget(null);
     let edgeOn = null;
     const { normals } = this.surface;
     if (this.camera.isOrthographicCamera) {

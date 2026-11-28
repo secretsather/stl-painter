@@ -1,9 +1,13 @@
+import { showPlan, swatch } from './swap-plan-view.js';
+
 
 export function setupColorLimit(model) {
   const control = document.getElementById('color-limit');
   const report = document.getElementById('color-limit-report');
   const summary = document.getElementById('color-limit-summary');
   const colors = document.getElementById('color-limit-colors');
+  const details = document.getElementById('slice-details');
+  const planPanel = document.getElementById('swap-plan');
   const preference = localStorage.getItem('horizontalColorLimit') ?? '4';
   for (let n = 1; n <= 16; n++) control.add(new Option(String(n), String(n)));
   control.value = preference;
@@ -20,6 +24,8 @@ export function setupColorLimit(model) {
     report.classList.toggle('warning', warning);
     summary.textContent = message;
     colors.replaceChildren();
+    planPanel.hidden = true;
+    planPanel.replaceChildren();
   }
   function stop() {
     if (worker) {
@@ -34,14 +40,14 @@ export function setupColorLimit(model) {
     pending = null;
     const { surface, limit } = active;
     const paint = active.snapshot ?? active.paint.slice();
-    const heights = surface !== sentSurface ? surface.heightRanges() : null;
-    sentSurface = surface;
+    const heights = active.palette.length > limit && surface !== sentSurface ? surface.heightRanges() : null;
+    if (heights) sentSurface = surface;
     worker.postMessage(
       { paint, limit, heights, masks: active.masks },
       heights ? [paint.buffer, heights.buffer] : [paint.buffer]
     );
   }
-  function showResult(request, conflict) {
+  function showResult(request, {conflict, plan}) {
     if (conflict) {
       const z = Number((conflict.z - request.bottom).toFixed(2));
       show(
@@ -51,18 +57,17 @@ export function setupColorLimit(model) {
       );
       request.palette.forEach((hex, i) => {
         if (!(conflict.mask & (1 << i))) return;
-        const item = document.createElement('span');
-        item.style.setProperty('--swatch', hex);
-        item.textContent = 'Color ' + (i + 1);
-        item.title = hex;
-        colors.append(item);
+        colors.append(swatch(request.palette,i));
       });
-    } else show('Within the selected color limit.');
+    } else {
+      show('Within the selected color limit.');
+      if (details.matches(':popover-open')) showPlan(planPanel, request, plan);
+    }
   }
-  function receive({ data: conflict }) {
+  function receive({ data: result }) {
     const { paint, paintRevision, key, surface } = active;
-    surface.sliceCheck = { paint, paintRevision, key, conflict };
-    if (!pending) showResult(active, conflict);
+    surface.sliceCheck = { paint, paintRevision, key, result };
+    if (!pending) showResult(active, result);
     active = null;
     sendNext();
   }
@@ -70,7 +75,7 @@ export function setupColorLimit(model) {
     const limit = Number(control.value);
     report.hidden = !limit;
     const { paint, palette, surface, bottom, masks, paintRevision } = model();
-    if (!limit || palette.length <= limit) {
+    if (!limit || (palette.length <= limit && !details.matches(':popover-open'))) {
       stop();
       show(limit ? 'Within the selected color limit.' : '');
       return;
@@ -79,7 +84,7 @@ export function setupColorLimit(model) {
     const request = { key, limit, surface, bottom, masks, paint, palette, paintRevision };
     const previous = surface.sliceCheck;
     if (!active && previous?.paint === paint && previous.paintRevision === paintRevision && previous.key === key) {
-      showResult(request, previous.conflict);
+      showResult(request, previous.result);
       return;
     }
     if (!worker) {
@@ -100,6 +105,9 @@ export function setupColorLimit(model) {
     localStorage.setItem('horizontalColorLimit', control.value);
     refresh();
   };
+  details.addEventListener('toggle', event => {
+    if (event.newState === 'open') refresh();
+  });
   refresh.beforeStroke = () => {
     // A brush writes directly into committed paint until mouse-up.
     if (pending && !pending.snapshot) pending.snapshot = pending.paint.slice();

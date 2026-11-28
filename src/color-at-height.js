@@ -1,3 +1,5 @@
+import { planToolheads } from './swap-plan.js';
+
 // Each paint cell has one exported filament slot and a continuous Z extent.
 export function cellHeights(positions) {
   const heights = new Float32Array((positions.length / 9) * 2);
@@ -20,11 +22,11 @@ function countColors(mask) {
   return n;
 }
 
-export function findColorConflict(heights, paint, limit, masks) {
+export function analyzeSliceColors(heights, paint, limit, masks) {
   const sourceMask = slot => masks ? masks[slot] : 1 << slot;
   let used = 0;
   for (const color of paint) used |= sourceMask(color);
-  if (countColors(used) <= limit) return null;
+  if (countColors(used) <= limit) return { conflict:null, plan:planToolheads(used, limit) };
 
   // Union each color's occupied bands before comparing colors. A single
   // min/max per color would incorrectly bridge unpainted gaps.
@@ -68,11 +70,18 @@ export function findColorConflict(heights, paint, limit, masks) {
     previous,
     worst = null,
     peak = limit;
+  const neighbors = new Uint16Array(16);
+  const occupied = Array.from({length:16}, () => []);
+  const starts = new Float64Array(16);
   function check(mask, z) {
     const count = countColors(mask);
     if (count > peak) {
       peak = count;
       worst = { count, mask, z };
+    }
+    for (let bits = mask; bits; bits &= bits - 1) {
+      const bit = bits & -bits;
+      neighbors[31 - Math.clz32(bit)] |= mask ^ bit;
     }
   }
   for (const z of [...events.keys()].sort((a, b) => a - b)) {
@@ -81,9 +90,21 @@ export function findColorConflict(heights, paint, limit, masks) {
     // At a color change, the bands above and below are separate. A flat
     // painted face can share the boundary with either neighboring band.
     if (flat) check(above | flat, z);
+    for (let bits = end; bits; bits &= bits - 1) {
+      const slot = 31 - Math.clz32(bits & -bits);
+      occupied[slot].push([starts[slot], z]);
+    }
+    for (let bits = flat & ~(above | start); bits; bits &= bits - 1) {
+      occupied[31 - Math.clz32(bits & -bits)].push([z, z]);
+    }
+    for (let bits = start; bits; bits &= bits - 1) starts[31 - Math.clz32(bits & -bits)] = z;
     above = (above & ~end) | start;
     if (flat) check(above | flat, z);
     previous = z;
   }
-  return worst;
+  return { conflict:worst, plan:worst ? null : planToolheads(used, limit, neighbors, occupied) };
+}
+
+export function findColorConflict(heights, paint, limit, masks) {
+  return analyzeSliceColors(heights, paint, limit, masks).conflict;
 }

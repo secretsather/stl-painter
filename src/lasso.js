@@ -1,6 +1,6 @@
 // Convert a centripetal Catmull–Rom spline to cubic Béziers. Weighting the
 // tangent by the spacing on each side keeps short spans beside long ones tame.
-export function lassoSegments(points, closed) {
+export function lassoCubics(points, closed) {
   const spans = [], tangents = [], segments = [];
   const n = points.length, count = closed ? n : n - 1;
   if (n < 2) return segments;
@@ -22,10 +22,15 @@ export function lassoSegments(points, closed) {
   }
   for (let i = 0; i < count; i++) {
     const j = (i + 1) % n, a = points[i], b = points[j], scale = spans[i].dt / 3;
-    segments.push(['C', a.x + tangents[i].x * scale, a.y + tangents[i].y * scale,
-      b.x - tangents[j].x * scale, b.y - tangents[j].y * scale, b.x, b.y].join(' '));
+    segments.push([a, {x:a.x + tangents[i].x * scale, y:a.y + tangents[i].y * scale},
+      {x:b.x - tangents[j].x * scale, y:b.y - tangents[j].y * scale}, b]);
   }
   return segments;
+}
+
+export function lassoSegments(points, closed) {
+  return lassoCubics(points, closed).map(([,a,b,end]) =>
+    ['C', a.x, a.y, b.x, b.y, end.x, end.y].join(' '));
 }
 
 // Rasterize the closed screen-space loop once. The summed mask lets the

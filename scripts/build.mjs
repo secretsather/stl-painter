@@ -1,6 +1,8 @@
 import { build } from 'esbuild';
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 await mkdir('dist', { recursive: true });
+await build({ entryPoints: ['src/repair-worker.js'], bundle: true, minify: true, format: 'esm',
+  target: 'chrome130', outdir: 'dist', loader: { '.wasm': 'binary' } });
 await build({
   entryPoints: ['src/app.js', 'src/color-check-worker.js', 'src/model-worker.js', 'src/fill-worker.js', 'src/matching-worker.js'],
   bundle: true,
@@ -21,9 +23,13 @@ for (const [name, file] of [
   ['three-mesh-bvh', 'LICENSE'],
   ['fflate', 'LICENSE'],
   ['lucide', 'LICENSE'],
+  ['meshrepair', 'LICENSE-MIT'],
+  ...['cdt2d', 'binary-search-bounds', 'robust-orientation', 'robust-in-sphere',
+    'robust-scale', 'robust-subtract', 'robust-sum', 'two-product', 'two-sum'].map(name => [name, 'LICENSE']),
 ]) {
   notices.push(name + '\n\n' + (await readFile('node_modules/' + name + '/' + file, 'utf8')));
 }
+notices.push(await readFile('src/vendor/meshrepair-runtime-NOTICES.txt', 'utf8'));
 notices.push('Prusa FDM Mixer\n\n' + await readFile('src/vendor/prusa-fdm-mixer/LICENSE', 'utf8'));
 await writeFile('dist/THIRD-PARTY-NOTICES.txt', notices.join('\n\n'));
 

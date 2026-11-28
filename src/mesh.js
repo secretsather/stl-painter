@@ -1,4 +1,5 @@
 import { walkPaintCells } from './paint-tree.js';
+import { pairKey } from './seam-geometry.js';
 // The leaf order is part of the project format and matches the four-child split in the painted 3MF.
 export const LARGE_MODEL_FACES = 1_000_000;
 export const MAX_FACES = 1_500_000;
@@ -338,6 +339,7 @@ export function flood(p, surface, start, angle, protect, seen = new Uint8Array(p
       n = surface.normals;
     function visit(next) {
       if (next < 0 || seen[next] || p.lockedSlots?.has(p.paint[next]) || (protect && p.paint[next] !== seed)) return;
+      if (surface.blocked?.has(pairKey(id,next))) return;
       const f = surface.owners[next] * 3;
       if (face !== f && n[face] * n[f] + n[face + 1] * n[f + 1] + n[face + 2] * n[f + 2] < cutoff)
         return;

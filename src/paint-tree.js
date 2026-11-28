@@ -33,9 +33,9 @@ export function walkPaintCells(p, vertex, midpoint, emit, range) {
   }
   for (let f = range?.face ?? 0; f < (range?.endFace ?? p.depth.length); f++) {
     visit(
-      vertex(p.faces[3 * f]),
-      vertex(p.faces[3 * f + 1]),
-      vertex(p.faces[3 * f + 2]),
+      vertex(p.faces[3 * f], f, 0),
+      vertex(p.faces[3 * f + 1], f, 1),
+      vertex(p.faces[3 * f + 2], f, 2),
       p.depth[f],
       0,
       f
@@ -85,7 +85,8 @@ export function surfaceRanges(project) {
 function siblingMerges(project, ranges, ids, edits) {
   const merges = [];
   if (!project.splits) return merges;
-  let edit = 0, cell, node;
+  const protectedRoots = project.seamRoots;
+  let edit = 0, cell, node, root;
   function visit() {
     const startNode = node++, startCell = cell;
     if (!project.splits[startNode]) {
@@ -99,7 +100,7 @@ function siblingMerges(project, ranges, ids, edits) {
     const firstEdit = edit, firstMerge = merges.length;
     const left = visit(), right = visit();
     if (left < 0 || left !== right) return -1;
-    if (edit !== firstEdit) {
+    if (edit !== firstEdit && !protectedRoots?.has(root)) {
       merges.length = firstMerge;
       merges.push({node: startNode, endNode: node, cell: startCell, endCell: cell, color: left});
     }
@@ -114,7 +115,8 @@ function siblingMerges(project, ranges, ids, edits) {
     }
     node = range.node;
     cell = range.cell;
-    while (ids[edit] < range.endCell) visit();
+    root = 2 * range.cell - range.node;
+    while (ids[edit] < range.endCell) { visit(); root++; }
   }
   return merges;
 }
@@ -130,6 +132,32 @@ export function mergeRepaintedCells(project, ranges, paintedIds) {
   }
   const merges = siblingMerges(project, ranges, ids);
   return merges.length ? rewritePaint(project, ranges, ids, null, merges) : null;
+}
+
+// Removing or moving the last seam in a root releases its same-color
+// subdivisions. Other seams and all still-visible paint boundaries survive.
+export function releaseSeamRoots(project, ranges, releasedRoots) {
+  if (!project.splits || !releasedRoots.size) return null;
+  const cells = [], ordered = Uint32Array.from(releasedRoots).sort();
+  let index = 0;
+  for (const r of ranges) {
+    const firstRoot = 2 * r.cell - r.node, lastRoot = 2 * r.endCell - r.endNode;
+    while (index < ordered.length && ordered[index] < firstRoot) index++;
+    if (index >= ordered.length) break;
+    if (ordered[index] >= lastRoot) continue;
+    let node = r.node, cell = r.cell;
+    for (let root = firstRoot; root < lastRoot; root++) {
+      const release = releasedRoots.has(root) && project.splits[node];
+      for (let pending = 1; pending;) {
+        if (project.splits[node++]) pending++;
+        else {
+          if (release) cells.push(cell);
+          cell++; pending--;
+        }
+      }
+    }
+  }
+  return cells.length ? mergeRepaintedCells(project, ranges, cells) : null;
 }
 
 export function applyLeafEdits(project, edits, ranges = surfaceRanges(project)) {

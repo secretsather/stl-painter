@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; object-src 'none'; base-uri 'none'"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; object-src 'none'; base-uri 'none'"
     />
     <title>STL Painter</title>
     <link rel="stylesheet" href="style.css" />
@@ -25,6 +25,9 @@
       <div class="header-actions">
         <button id="project-actions" popovertarget="project-menu">Project<i data-lucide="chevron-down" aria-hidden="true"></i></button>
         <div id="project-menu" popover>
+          <button id="repair-model" popovertarget="project-menu" popovertargetaction="hide">
+            <i data-lucide="wrench" aria-hidden="true"></i>Repair STL
+          </button>
           <button id="clear-paint" popovertarget="project-menu" popovertargetaction="hide" title="Reset unlocked paint to the base color (Color 1)">
             <i data-lucide="eraser" aria-hidden="true"></i>Clear all paint
           </button>
@@ -69,6 +72,9 @@
           <button data-tool="Fill Lasso" title="Fill Lasso (L)" aria-label="Fill Lasso" aria-keyshortcuts="L">
             <i data-lucide="lasso"></i>
           </button>
+          <button data-tool="Seam" title="Seam (M)" aria-label="Seam" aria-keyshortcuts="M">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 17C5 8 19 16 19 7"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="5" r="2"/></svg>
+          </button>
           <button data-tool="Stamps" title="Stamps (S)" aria-label="Stamps">
             <i data-lucide="stamp"></i>
           </button>
@@ -97,6 +103,7 @@
             <span id="color-limit-summary"></span>
             <div id="color-limit-colors"></div>
           </div>
+          <section id="swap-plan" class="swap-plan" aria-label="Toolhead swap plan" hidden></section>
         </div>
         <div class="viewbar">
           <i data-lucide="orbit"></i
@@ -112,6 +119,7 @@
           ><span></span>
           <button id="align-face" aria-pressed="false" title="Click a model face to view it straight on (Esc to cancel)">Align to face</button
           ><span></span>
+          <button id="show-seams" aria-pressed="true" title="Show or hide saved seam guides">Show seams</button><span></span>
           <button id="projection" title="Toggle orthographic projection">Perspective</button
           ><span></span
           ><button id="fit" class="icon" title="Fit model (Home)" aria-label="Fit model">
@@ -170,7 +178,13 @@
             <div id="lasso-panel" hidden>
               <button class="primary wide" id="apply-lasso" aria-keyshortcuts="Enter" title="Apply lasso (Enter)" disabled>Apply lasso</button>
             </div>
+            <div id="seam-panel" hidden>
+              <label class="check"><input id="smooth-seam" type="checkbox" checked />Smooth seam</label>
+              <button class="primary wide" id="apply-seam" aria-keyshortcuts="Enter" disabled>Apply seam</button>
+              <button class="wide" id="remove-seam" hidden>Remove seam</button>
+            </div>
             <div id="fill-panel" hidden>
+              <label class="check"><input id="stop-seams" type="checkbox" />Stop at seams</label>
               <label class="control-label" for="angle"
                 >Edge angle <output id="angle-value">35°</output></label
               ><input type="range" id="angle" min="0" max="180" step="1" value="35" aria-keyshortcuts="[ ]" />
@@ -261,6 +275,13 @@
             </div>
             <p id="tool-hint" class="hint"></p>
           </section>
+          <section class="panel" id="saved-seams-panel" hidden>
+            <div class="section-head">
+              <h2><button class="panel-toggle" aria-expanded="true" aria-controls="seam-list">Seams</button></h2>
+              <button id="new-seam" class="small-icon" aria-label="New seam" title="New seam"><i data-lucide="plus"></i></button>
+            </div>
+            <div id="seam-list" role="group" aria-label="Saved seams"></div>
+          </section>
         </div>
       </aside>
     </main>
@@ -269,6 +290,23 @@
       <span id="faces"></span>
       <span id="paint-triangles" title="Total paint triangles, including subdivisions, compared with the project limit"></span>
     </footer>
+    <dialog id="export-dialog" aria-labelledby="export-title">
+      <form method="dialog">
+        <h2 id="export-title">Export 3MF</h2>
+        <label class="check"><input type="radio" name="export-mode" value="full" checked />Full color</label>
+        <p class="hint">Keep the painted filament assignments.</p>
+        <label class="check"><input type="radio" name="export-mode" value="heads" />Limit to printer heads</label>
+        <label class="control-label" for="export-heads">Available toolheads</label>
+        <select id="export-heads"></select>
+        <p class="hint">Use one filament slot per head. Suggested swap pauses are embedded in the 3MF. The PDF beside it lists the spools and pause windows.</p>
+        <p id="export-status" role="status" hidden></p>
+        <section id="export-plan" class="swap-plan" aria-label="Toolhead swap plan" hidden></section>
+        <div class="dialog-actions">
+          <button value="cancel" type="button" id="cancel-export">Cancel</button>
+          <button value="export" id="confirm-export" class="primary">Choose save location…</button>
+        </div>
+      </form>
+    </dialog>
     <dialog id="mix-editor" aria-labelledby="mix-title">
       <form method="dialog">
         <h2 id="mix-title">Add mixed color</h2>
@@ -363,11 +401,11 @@
           <dd>[ &nbsp; ]</dd>
           <dt>Apply the active tool’s preview</dt>
           <dd>Enter or numpad Enter</dd>
-          <dt>Remove the last Fill Lasso node</dt>
+          <dt>Step back one Fill Lasso or Seam node</dt>
           <dd>Backspace</dd>
           <dt>Cancel Fill Gaps, stamp or text placement and return to Brush</dt>
           <dd>Esc</dd>
-          <dt>Cancel a Fill Lasso or Fill Band preview</dt>
+          <dt>Cancel a Fill Lasso, Fill Band or Seam preview</dt>
           <dd>Esc</dd>
           <dt>Undo / redo</dt>
           <dd>Ctrl Z / Ctrl Y</dd>
@@ -375,6 +413,16 @@
           <dd>Ctrl O / S / Shift S</dd>
         </dl>
         <button class="primary wide">Done</button>
+      </form>
+    </dialog>
+    <dialog id="repair-choice" aria-labelledby="repair-title" aria-describedby="repair-detail">
+      <form method="dialog">
+        <h2 id="repair-title">Repair STL</h2>
+        <p id="repair-detail"></p>
+        <div class="dialog-actions">
+          <button value="cancel" autofocus>Cancel</button>
+          <button value="repair" class="primary">Apply repair</button>
+        </div>
       </form>
     </dialog>
     <dialog id="notice">

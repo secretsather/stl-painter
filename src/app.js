@@ -1,5 +1,6 @@
 import {
   createIcons,
+  Wrench,
   FolderOpen,
   Save,
   Ellipsis,
@@ -27,17 +28,19 @@ import {
 } from 'lucide';
 import { Viewport } from './viewport.js';
 import { setupSidebar } from './sidebar.js';
+import { SeamEditor } from './seam-editor.js';
 import { setupImportPreview } from './import-preview.js';
 import { RefinedStroke } from './refined-stroke.js';
-import { applyLeafEdits, mergeRepaintedCells } from './paint-tree.js';
+import { applyLeafEdits, mergeRepaintedCells, releaseSeamRoots } from './paint-tree.js';
 import { bandEdits } from './band.js';
 import { lassoFootprint, lassoSegments } from './lasso.js';
 import { binarySTLFaceCount, checkFaceLimit, LARGE_MODEL_FACES, MAX_CELLS } from './mesh.js';
 import { FillPreview, drawFillPreview, drawSurfaceHighlight } from './fill-preview.js';
 import { hasMultipleSwatches } from './fill-gaps.js';
-import { modelJob, FillJobs } from './model-job.js';
+import { modelJob, repairJob, FillJobs } from './model-job.js';
 import { textArtwork, loadFontFamilies } from './text-artwork.js';
 import { setupColorLimit } from './color-limit.js';
+import { chooseExport } from './export-dialog.js';
 import { stampCanvas, loadArtwork } from './stamps.js';
 import { MAX_FILAMENTS, MAX_SWATCHES, physicalSlots, filamentMasks, mixHex, recipeLabel, suggestFilament } from './mixes.js';
 import { chooseMix } from './mix-editor.js';
@@ -46,6 +49,7 @@ import { paletteMapping, readPalette, writePalette } from './palette-file.js';
 const $ = (id) => document.getElementById(id),
   all = (q) => [...document.querySelectorAll(q)];
 const icons = {
+  Wrench,
   FolderOpen,
   Save,
   Ellipsis,
@@ -134,6 +138,12 @@ function setDocumentName(name, isProject) {
   header.title = name;
   $('model-name').textContent = isProject ? name.replace(/\.stlp$/i, '') || name : name;
 }
+let seamEditor;
+function setSeams(seams) {
+  p.seams = seams ?? [];
+  p.seamRoots = new Set();
+  for (const seam of p.seams) for (const edge of seam.edges) p.seamRoots.add(edge[3]);
+}
 let nativeDirty;
 function state() {
   const pendingStroke = !!stroke?.old.size || !!stroke?.refiner?.edits.size;
@@ -149,6 +159,7 @@ function state() {
   $('redo').disabled = !future.length;
 }
 function record(label, change, weight = 0, scope = 'paint') {
+  if (scope !== 'seam-name' && seamEditor?.draft) seamEditor.cancel();
   const before = revision;
   revision = ++sequence;
   history.push({ label, change, before, after: revision, weight, scope });
@@ -318,12 +329,16 @@ function recordColors(label, ids, before, after) {
 function updatePaintTriangleCount() {
   $('paint-triangles').textContent = p.paint.length.toLocaleString() + ' / ' + MAX_CELLS.toLocaleString() + ' paint triangles';
 }
-function recordSurfaceChange(label, after) {
-  const before = { paint: p.paint, splits: p.splits, ranges: v.ranges };
+function recordSurfaceChange(label, after, seams) {
+  const before = { paint: p.paint, splits: p.splits, ranges: v.ranges, seams: p.seams };
   const change = forward => {
     const state = forward ? after : before;
     p.paint = state.paint;
     p.splits = state.splits;
+    if (seams) {
+      setSeams(forward ? seams : before.seams);
+      seamEditor.showSaved();
+    }
     v.rebuildSurface(state.ranges, after.changed);
     updatePaintTriangleCount();
   };
@@ -339,6 +354,7 @@ function undo(redo = false) {
   finishStroke();
   const from = redo ? future : history,
     to = redo ? history : future;
+  if (from.at(-1)?.scope !== 'seam-name') seamEditor?.cancel();
   if (!from.length) return;
   draggingArtwork = false;
   clearPreview();
@@ -349,7 +365,7 @@ function undo(redo = false) {
   to.push(h);
   selected = Math.min(selected, p.palette.length - 1);
   stampIndex = Math.min(stampIndex, p.stamps.length - 1);
-  if (h.scope !== 'paint') {
+  if (h.scope !== 'paint' && h.scope !== 'seam-name') {
     paletteUI();
     stampUI();
   }
@@ -591,6 +607,7 @@ function updatePlacementVisibility() {
 }
 const hints = {
   Brush: 'Drag across the visible surface to paint.',
+  Seam: 'Press and hold on the model to position a node. Release to place it. Orbit, pan or zoom between nodes, keeping the previous node in view. Drag a placed node to move it. Release on the first node to close. Enter applies, Backspace steps back, Esc cancels.',
   Band: 'Click twice to set the bounds, or enter both distances.',
   Fill: 'Hover to preview. Tap [ or ] for 1°, or hold to keep adjusting. Click to fill.',
   'Fill Gaps': 'Preview small patches enclosed by one swatch. Apply fills them together. Esc cancels.',
@@ -613,6 +630,10 @@ function toolUI() {
   $('brush-panel').hidden = !['Brush', 'Eraser'].includes(tool);
   $('edge-control').hidden = $('brush-panel').hidden && tool !== 'Fill Lasso';
   $('lasso-panel').hidden = tool !== 'Fill Lasso';
+  $('seam-panel').hidden = tool !== 'Seam';
+  $('saved-seams-panel').hidden = tool !== 'Seam';
+  $('show-seams').hidden = $('show-seams').nextElementSibling.hidden = tool !== 'Seam';
+  seamEditor?.updateVisibility();
   $('fill-panel').hidden = tool !== 'Fill';
   $('gap-panel').hidden = tool !== 'Fill Gaps';
   $('band-panel').hidden = tool !== 'Band';
@@ -840,7 +861,7 @@ async function findFillRegion(seed) {
   if (v.surface !== surface) return null;
   const jobs = fillJobs;
   try {
-    return await jobs.region(p.paint, paintRevision, seed, angle, protect, p.lockedSlots);
+    return await jobs.region(p.paint, paintRevision, seed, angle, protect, p.lockedSlots, $('stop-seams').checked);
   } catch (error) {
     if (fillJobs === jobs) {
       delete surface.graphJob;
@@ -871,6 +892,7 @@ function applyFill(mask) {
   recordColors('Filled region', ids, before, color);
 }
 function chooseTool(name) {
+  if (tool === 'Seam') seamEditor.cancel();
   if (tool === 'Fill Gaps') clearGaps();
   cancelBand();
   stopFillAngleRepeat();
@@ -898,7 +920,12 @@ function load(project, kind, documentName = project.name, prepared) {
   if (pickingFace) setFacePicking(false);
   draggingArtwork = false;
   if (v?.project) clearPreview();
+  seamEditor?.cancel();
   p = project;
+  setSeams(project.seams);
+  $('stop-seams').checked = p.editingContext?.stopAtSeams === true;
+  $('smooth-seam').checked = p.editingContext?.smoothSeam !== false;
+  $('show-seams').setAttribute('aria-pressed', String(p.editingContext?.showSeams !== false));
   history = [];
   future = [];
   revision = saved = 0;
@@ -927,6 +954,7 @@ function load(project, kind, documentName = project.name, prepared) {
   fillJobs?.close();
   fillJobs = null;
   v.setProject(p, prepared);
+  seamEditor.showSaved();
   if (tool === 'Fill Gaps') refreshGaps();
   if (tool === 'Fill') prepareFill().catch(() => {});
   $('projection').textContent = v.camera.isOrthographicCamera ? 'Orthographic' : 'Perspective';
@@ -966,18 +994,22 @@ async function task(message, fn) {
     scheduleFillHover();
   }
 }
-async function write(kind) {
+async function write(kind, swapSheet) {
   finishStroke();
-  const exported = kind === 'export';
+  const exported = kind === 'export' || kind === 'export-heads';
   if (!(await files.chooseWrite(kind, p.name))) return false;
   const data = {
     name: p.name, vertices: p.vertices, faces: p.faces, depth: p.depth,
     paint: p.paint, splits: p.splits, palette: p.palette, mixes: p.mixes,
+    ...(swapSheet && {swapSheet}),
   };
   if (!exported) {
     data.stamps = p.stamps;
+    data.seams = p.seams;
     data.editingContext = {
       camera: v.cameraState(),
+      stopAtSeams: $('stop-seams').checked, showSeams: seamEditor.visible,
+      smoothSeam: $('smooth-seam').checked,
       tool,
       ...(tool === 'Fill Gaps' && gapWidth.valueAsNumber > 0 && { gapWidth: gapWidth.valueAsNumber }),
       ...(tool === 'Fill Gaps' && gapSeams.checked && { gapSeams: true }),
@@ -1001,7 +1033,8 @@ async function write(kind) {
     setDocumentName(name, true);
     state();
   }
-  notify((exported ? 'Exported ' : 'Saved ') + name);
+  notify((exported ? 'Exported ' : 'Saved ') + name +
+    (swapSheet ? ' and ' + name.replace(/\.3mf$/i, ' - swap plan.pdf') : ''));
   return true;
 }
 async function prepareToLeave() {
@@ -1010,6 +1043,55 @@ async function prepareToLeave() {
   const answer = await files.decide();
   if (answer === 'save') return (await write('save')) ? 'saved' : 'cancel';
   return answer === 'discard' ? 'ready' : 'cancel';
+}
+function meshState(project) {
+  const { vertices, faces, depth, paint, splits, seams } = project;
+  return { vertices, faces, depth, paint, splits, seams };
+}
+function showGeometry(mesh, prepared) {
+  clearPreview();
+  cancelBand();
+  clearGaps();
+  fillJobs?.close();
+  fillJobs = null;
+  armed = false;
+  const camera = v.cameraState();
+  seamEditor.cancel();
+  Object.assign(p, mesh);
+  setSeams(mesh.seams);
+  v.setProject(p, prepared);
+  seamEditor.showSaved();
+  v.restoreCamera(camera);
+  $('faces').textContent = p.depth.length.toLocaleString() + ' source triangles';
+  ['X', 'Y', 'Z'].forEach((axis, i) => {
+    $('dimensions').querySelector('.axis-' + axis).textContent = Number(v.box.size[i].toFixed(2));
+  });
+  updatePaintTriangleCount();
+  toolUI();
+}
+function recordGeometry(label, before, after) {
+  const weight = [before, after].reduce((sum, mesh) =>
+    sum + Object.values(mesh).reduce((n, array) => n + (array?.byteLength ?? 0), 0), 0);
+  record(label, forward => showGeometry(forward ? after : before), weight);
+}
+function prepareGeometry(geometry, palette) {
+  const arrays = Object.values(geometry).filter(ArrayBuffer.isView);
+  return modelJob({ mesh: { ...geometry, palette } }, [...new Set(arrays.map(a => a.buffer))]);
+}
+function chooseRepair(name, repair) {
+  const dialog = $('repair-choice');
+  const cancel = dialog.querySelector('[value="cancel"]');
+  const apply = dialog.querySelector('[value="repair"]');
+  const detail = repair.warning || 'No STL repairs needed.';
+  $('repair-detail').textContent = name + ' — ' + detail +
+    (repair.mesh && repair.paintAtRisk ? ' Undo restores the original geometry and paint.' : '');
+  cancel.textContent = repair.mesh ? 'Cancel' : 'Close';
+  apply.hidden = !repair.mesh;
+  dialog.returnValue = 'cancel';
+  return new Promise(resolve => {
+    dialog.addEventListener('close', () => resolve(dialog.returnValue), { once: true });
+    dialog.showModal();
+  });
 }
 function openModel(selectFile) {
   return task('Opening model…', async () => {
@@ -1036,10 +1118,7 @@ function openModel(selectFile) {
       if (p.mixes) next.mixes = structuredClone(p.mixes);
       next.editingContext = { color: p.palette[selected] };
     }
-    const { vertices, faces: indices, depth, paint, splits, palette } = next;
-    const attributes = [vertices, indices, depth, paint, splits].filter(Boolean);
-    const { mesh, prepared } = await modelJob({ mesh: { vertices, faces: indices, depth, paint, splits, palette } },
-      [...new Set(attributes.map(a => a.buffer))]);
+    const { mesh, prepared } = await prepareGeometry(meshState(next), next.palette);
     Object.assign(next, mesh);
     if (file.sample) {
       load(next, 'SAMPLE MODEL', next.name, prepared);
@@ -1050,6 +1129,17 @@ function openModel(selectFile) {
   });
 }
 $('open').onclick = () => openModel(files.open);
+$('repair-model').onclick = () => task('Checking model geometry…', async () => {
+  const before = meshState(p);
+  const repair = await repairJob({ ...before, lockedSlots: p.lockedSlots });
+  const choice = await chooseRepair($('docname').textContent, repair);
+  if (choice !== 'repair' || !repair.mesh) return;
+  const { mesh, prepared } = await prepareGeometry(repair.mesh, p.palette);
+  const after = meshState(mesh);
+  showGeometry(after, prepared);
+  recordGeometry('Repaired STL geometry', before, after);
+  notify(repair.message);
+});
 $('save').onclick = () => task('Saving project…', () => write('save'));
 $('save-as').onclick = () => task('Saving project as…', () => write('saveAs'));
 $('save-palette').onclick = () => task('Saving palette…', async () => {
@@ -1068,7 +1158,13 @@ $('load-palette').onclick = () => task('Loading palette…', async () => {
   }
   replacePalette('Loaded palette ' + file.name, next.palette, next.mixes, paletteMapping(p.palette, next.palette));
 });
-$('export').onclick = () => task('Preparing 3MF export…', () => write('export'));
+$('export').onclick = async () => {
+  if (busy) return;
+  finishStroke();
+  const choice = await chooseExport(p, v.surface, v.box.min[2], paintRevision);
+  if (choice) await task('Preparing 3MF export…', () =>
+    choice.plan ? write('export-heads', choice) : write('export'));
+};
 files.onClose(() => task('Closing project…', async () => (await prepareToLeave()) !== 'cancel'));
 $('undo').onclick = () => undo();
 $('redo').onclick = () => undo(true);
@@ -1455,6 +1551,7 @@ $('text-panel').addEventListener('input', armPreview);
 range('angle', 'angle-value', '°');
 $('angle').addEventListener('input', refreshFillHover);
 $('protect').addEventListener('change', refreshFillHover);
+$('stop-seams').addEventListener('change', refreshFillHover);
 range('rotation', 'rotation-value', '°', true);
 range('cutoff', 'cutoff-value', '°', true);
 $('filter').onchange = () => {
@@ -1714,6 +1811,10 @@ function bindCanvas() {
     }
     if (tool === 'Stamps' && stampIndex < 0) return;
     if (tool === 'Fill Gaps') return;
+    if (tool === 'Seam') {
+      if (e.isPrimary) seamEditor.down(pt,e);
+      return;
+    }
     if (tool === 'Fill Lasso') {
       if (e.isPrimary) placeLassoNode(pt);
       return;
@@ -1750,6 +1851,7 @@ function bindCanvas() {
     fillPoint = !e.buttons && e.pointerType !== 'touch' ? pt : null;
     if (busy) return;
     sampleMode(e.altKey);
+    if (seamEditor.drag) seamEditor.move(pt,e);
     if (bandStart !== null && !e.buttons && !e.altKey && !pickingFace) {
       const position = v.bandPositionAt(pt, Number(bandDirection.value));
       if (bandHover !== position) {
@@ -1777,6 +1879,7 @@ function bindCanvas() {
     }
   });
   function end(e) {
+    if (seamEditor.drag) seamEditor.up(point(e),e);
     if (e.type === 'pointerup' && !e.buttons && e.pointerType !== 'touch' && canvas.matches(':hover')) {
       fillPoint = point(e);
       scheduleFillHover();
@@ -1836,7 +1939,7 @@ window.addEventListener('keyup', e => {
 window.addEventListener('blur', stopFillAngleRepeat);
 document.addEventListener('focusin', stopFillAngleRepeat);
 document.addEventListener('visibilitychange', stopFillAngleRepeat);
-const applyButtonByTool = { Band: 'apply-band', 'Fill Gaps': 'apply-gaps', 'Fill Lasso': 'apply-lasso', Stamps: 'apply', Text: 'apply' };
+const applyButtonByTool = { Seam: 'apply-seam', Band: 'apply-band', 'Fill Gaps': 'apply-gaps', 'Fill Lasso': 'apply-lasso', Stamps: 'apply', Text: 'apply' };
 window.addEventListener('keydown', (e) => {
   if (heldFillKey && (e.code || e.key) !== heldFillKey && !e.repeat) stopFillAngleRepeat();
   if (busy || e.isComposing || document.querySelector('dialog[open], :popover-open')) return;
@@ -1865,6 +1968,12 @@ window.addEventListener('keydown', (e) => {
     setFacePicking(false);
     v.canvas.focus({ preventScroll: true });
     return;
+  }
+  if (tool === 'Seam' && seamEditor.draft && !ctrl && !e.altKey && !e.shiftKey &&
+      (k === 'escape' || k === 'backspace') && !e.target.matches('input, textarea')) {
+    e.preventDefault();
+    if (k === 'escape') seamEditor.cancel(); else if (!e.repeat) seamEditor.back();
+    v.canvas.focus({preventScroll:true}); return;
   }
   if (k === 'escape' && lasso) {
     e.preventDefault();
@@ -1932,6 +2041,7 @@ window.addEventListener('keydown', (e) => {
 });
 async function start() {
   v = new Viewport($('viewport'), (view) => {
+    seamEditor?.freezeView();
     cancelLasso();
     refreshFillHover();
     if (tool === 'Fill Gaps') renderGaps();
@@ -1939,6 +2049,62 @@ async function start() {
     refreshBrushCursor();
     schedulePreview();
   });
+  seamEditor = new SeamEditor(v, notify, (label, seams, index) => {
+    if (index < 0) {
+      const protectedRoots = new Set();
+      for (const seam of seams) for (const edge of seam.edges) protectedRoots.add(edge[3]);
+      const released = new Set([...p.seamRoots].filter(root=>!protectedRoots.has(root)));
+      const compact = releaseSeamRoots({...p,seamRoots:protectedRoots},v.ranges,released);
+      recordSurfaceChange(label,compact ?? {paint:p.paint,splits:p.splits,ranges:v.ranges,changed:new Set()},seams);
+      return;
+    }
+    return task('Cutting seam into the surface…', async () => {
+      const before = meshState(p);
+      const { mesh, prepared } = await modelJob({
+        mesh: { ...before, palette: p.palette },
+        cut: { seams, index },
+      });
+      const after = meshState(mesh);
+      showGeometry(after, prepared);
+      recordGeometry(label, before, after);
+    });
+  }, (index, name) => {
+    const previous = p.seams[index].name;
+    if ((previous || '') === name) return;
+    const change = forward => {
+      const seams = p.seams.slice();
+      seams[index] = { ...seams[index] };
+      const value = forward ? name : previous;
+      if (value) seams[index].name = value;
+      else delete seams[index].name;
+      p.seams = seams;
+      seamEditor.renderList();
+    };
+    change(true);
+    record('Renamed seam', change, 0, 'seam-name');
+  });
+  const toolPanel = $('seam-panel').closest('.tool-panel');
+  const seamList = $('seam-list');
+  seamList.onpointerleave = () => toolPanel.style.removeProperty('--seam-selection-height');
+  seamList.onclick = event => {
+    const row = event.target.closest('[data-seam]');
+    if (!row) return;
+    const index = Number(row.dataset.seam);
+    if (seamEditor.draft?.index !== index) {
+      // Switching tools can move the row out from under the second click of a rename.
+      if (event.detail && seamList.matches(':hover')) {
+        toolPanel.style.setProperty('--seam-selection-height', toolPanel.offsetHeight + 'px');
+      }
+      chooseTool('Seam');
+      seamEditor.edit(index);
+    }
+    v.canvas.focus({ preventScroll: true });
+  };
+  $('new-seam').onclick = () => {
+    chooseTool('Seam');
+    revealPanel('seam-list');
+    v.canvas.focus({ preventScroll: true });
+  };
   await openModel(files.openLaunchFile);
   if (!p) await openModel(files.openSample);
   bindCanvas();

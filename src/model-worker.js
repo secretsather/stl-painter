@@ -1,4 +1,5 @@
 import { MeshBVH } from 'three-mesh-bvh';
+import { cutSeamMesh } from './seam-cut.js';
 import { geometryForProject, displayChunk, displayColors } from './display-mesh.js';
 import { surfaceRanges } from './paint-tree.js';
 import { readSTL, bounds, sourceNormals } from './mesh.js';
@@ -7,7 +8,10 @@ import { readProject } from './files.js';
 self.onmessage = ({ data }) => {
   try {
     if (data.mesh) {
-      const mesh = data.mesh, normals = sourceNormals(mesh), ranges = surfaceRanges(mesh);
+      const mesh = data.cut
+        ? { ...cutSeamMesh(data.mesh, data.cut.seams, data.cut.index), palette: data.mesh.palette }
+        : data.mesh;
+      const normals = sourceNormals(mesh), ranges = surfaceRanges(mesh);
       const rgb = displayColors(mesh.palette), box = bounds(mesh.vertices);
       const tree = MeshBVH.serialize(new MeshBVH(geometryForProject(mesh), { indirect: true }), { cloneBuffers: false });
       const chunks = ranges.map(range => displayChunk(mesh, range, normals, rgb));

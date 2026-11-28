@@ -46,7 +46,7 @@ async function decide() {
   return ['save', 'discard', 'cancel'][response];
 }
 let fileWriter;
-function writeModel(temporary, project, exporting) {
+function writeModel(temporary, project, exporting, sheetFor) {
   if (!fileWriter) {
     const entry = app.isPackaged
       ? path.join(process.resourcesPath, 'app.asar.unpacked/dist/file-writer.cjs')
@@ -63,10 +63,10 @@ function writeModel(temporary, project, exporting) {
       worker.off('error', fail);
       worker.off('exit', stopped);
     }
-    function complete({ error }) {
+    function complete({ error, sheet }) {
       cleanup();
       if (error) reject(Error(error));
-      else resolve();
+      else resolve(sheet);
     }
     function fail(error) { cleanup(); reject(error); }
     function stopped() { fail(Error('File writer stopped.')); }
@@ -76,9 +76,55 @@ function writeModel(temporary, project, exporting) {
     const arrays = [project.vertices, project.faces, project.depth, project.paint, project.splits,
       ...(project.stamps ?? []).flatMap(s => [s.pixels, s.source])].filter(Boolean);
     try {
-      worker.postMessage({ temporary, project, exporting }, [...new Set(arrays.map(a => a.buffer))]);
+      worker.postMessage({ temporary, project, exporting, sheetFor }, [...new Set(arrays.map(a => a.buffer))]);
     } catch (error) { fail(error); }
   });
+}
+
+async function printSwapSheet(html) {
+  const dir = await fs.mkdtemp(path.join(app.getPath('temp'), 'stlp-print-'));
+  const file = path.join(dir, 'swap-plan.html');
+  let preview;
+  try {
+    await fs.writeFile(file, html, { flag:'wx' });
+    preview = new BrowserWindow({show:false, webPreferences:{sandbox:true, javascript:false}});
+    await preview.loadFile(file);
+    return await preview.webContents.printToPDF({
+      pageSize:'A4', printBackground:true, displayHeaderFooter:true,
+      margins:{top:0.55, bottom:0.65, left:0.55, right:0.55},
+      headerTemplate:'<span></span>',
+      footerTemplate:'<div style="width:100%;text-align:center;font:9px Arial;color:#59665c">STL Painter &nbsp; · &nbsp; <span class="pageNumber"></span> / <span class="totalPages"></span></div>',
+    });
+  } finally {
+    if (preview && !preview.isDestroyed()) preview.destroy();
+    await fs.rm(file, {force:true});
+    await fs.rmdir(dir);
+  }
+}
+
+async function publishWithSheet(temporary, dest, pdf, replacePdf, html) {
+  const staged = temporary + '.pdf', backup = temporary + '.bak';
+  let published = false, keepBackup = false;
+  try {
+    await fs.writeFile(staged, await printSwapSheet(html), {flag:'wx'});
+    if (replacePdf) {
+      await fs.copyFile(pdf, backup, fs.constants.COPYFILE_EXCL);
+      await fs.rename(staged, pdf);
+    } else {
+      await fs.copyFile(staged, pdf, fs.constants.COPYFILE_EXCL);
+    }
+    published = true;
+    await fs.rename(temporary, dest);
+  } catch (error) {
+    if (published && replacePdf) {
+      try { await fs.rename(backup, pdf); }
+      catch { keepBackup = true; throw Error('Export failed. The previous swap sheet is backed up at ' + backup); }
+    } else if (published) await fs.unlink(pdf);
+    throw error;
+  } finally {
+    await fs.rm(staged, {force:true}).catch(() => {});
+    if (!keepBackup) await fs.rm(backup, {force:true}).catch(() => {});
+  }
 }
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
@@ -166,7 +212,8 @@ app.whenReady().then(() => {
     try {
       const project = kind === 'save' || kind === 'saveAs';
       const palette = kind === 'palette';
-      if (!project && !palette && kind !== 'export') throw Error('Unknown file type.');
+      const limited = kind === 'export-heads';
+      if (!project && !palette && kind !== 'export' && !limited) throw Error('Unknown file type.');
       let dest = kind === 'save' ? currentPath : null;
       if (!dest) {
         const filter = palette ? paletteFilter : project ? projectFilter : exportFilter;
@@ -182,7 +229,21 @@ app.whenReady().then(() => {
         if (!dest.toLowerCase().endsWith(ext))
           throw Error('Choose a filename ending in ' + ext + '.');
       }
-      destination = { dest, project, palette };
+      const pdf = limited ? dest.slice(0, -4) + ' - swap plan.pdf' : null;
+      let replacePdf = false;
+      if (pdf) {
+        const existing = await fs.lstat(pdf).catch(err => {
+          if (err.code !== 'ENOENT') throw err;
+        });
+        if (existing) {
+          if (!existing.isFile()) throw Error('Choose another filename. The companion PDF path is already in use.');
+          const {response} = await dialog.showMessageBox(win, {type:'question', buttons:['Replace PDF','Cancel'],
+            defaultId:1, cancelId:1, message:'Replace the existing swap plan?', detail:pdf});
+          if (response !== 0) return null;
+          replacePdf = true;
+        }
+      }
+      destination = { dest, project, palette, pdf, replacePdf };
       return true;
     } finally {
       choosing = false;
@@ -191,7 +252,7 @@ app.whenReady().then(() => {
   register('cancel-write', () => { destination = null; });
   register('write', async (model) => {
     if (writing || !destination) throw Error('No destination available.');
-    const { dest, project, palette } = destination;
+    const { dest, project, palette, pdf, replacePdf } = destination;
     destination = null;
     writing = true;
     const temporary = path.join(path.dirname(dest), '.stlp-' + randomUUID() + '.tmp');
@@ -199,8 +260,11 @@ app.whenReady().then(() => {
       if (palette) {
         if (typeof model !== 'string' || Buffer.byteLength(model) > maxPaletteBytes) throw Error('Invalid palette data.');
         await fs.writeFile(temporary, model, { flag: 'wx' });
-      } else await writeModel(temporary, model, !project);
-      await fs.rename(temporary, dest);
+      } else {
+        const sheet = await writeModel(temporary, model, !project, pdf && path.basename(dest));
+        if (pdf) await publishWithSheet(temporary, dest, pdf, replacePdf, sheet);
+      }
+      if (!pdf) await fs.rename(temporary, dest);
       if (project) currentPath = dest;
       return path.basename(dest);
     } finally {

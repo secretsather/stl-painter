@@ -107,22 +107,31 @@ export function filamentMasks(project) {
     ? project.mixes[slot].reduce((mask, part) => mask | bit(part.slot), 0) : bit(slot));
 }
 
-export function exportFilaments(project) {
+export function exportFilaments(project, heads) {
   const used = new Set(project.paint);
   const blends = Object.keys(project.mixes ?? {}).map(Number).filter(slot => used.has(slot));
   // Virtual IDs follow the physical spool list. Keep that list in printer
   // order even when a spool has no directly painted face.
-  const physical = physicalSlots(project).filter(slot => blends.length || used.has(slot));
-  const exported = [...physical, ...blends];
+  const physical = physicalSlots(project);
+  const initial = heads ? heads.map(([first]) => physical[first]) :
+    physical.filter(slot => blends.length || used.has(slot));
+  const slots = project.palette.map(() => 0);
+  initial.forEach((slot, i) => { slots[slot] = i + 1; });
+  heads?.forEach((members, i) => {
+    for (const color of members) slots[physical[color]] = i + 1;
+  });
+  blends.forEach((slot, i) => { slots[slot] = initial.length + i + 1; });
   const definitions = blends.map((slot, i) => {
     const parts = project.mixes[slot];
-    const ids = parts.map(part => physical.indexOf(part.slot) + 1);
+    const ids = parts.map(part => slots[part.slot]);
+    if (ids.includes(0) || new Set(ids).size !== ids.length)
+      throw Error('The toolhead assignments cannot print this mix.');
     const triple = ids.length === 3;
     const group = triple ? ids.join('/') : '';
     const weights = triple ? parts.map(part => part.percent).join('/') : '';
     return [ids[0], ids[1], 1, 1, parts[1].percent, 0, 'g' + group, 'w' + weights,
       triple ? 'm0' : 'm2', 'z0', 'xa0', 'xb0', 'd0', 'o0', 'u' + (i + 1), 'cm0'].join(',');
   });
-  return { colors: physical.map(i => project.palette[i].toUpperCase()),
-    slots: project.palette.map((_, i) => exported.indexOf(i) + 1), definitions: definitions.join(';') };
+  for (const slot of used) if (!slots[slot]) throw Error('A painted color has no assigned toolhead.');
+  return { colors: initial.map(i => project.palette[i].toUpperCase()), slots, definitions: definitions.join(';') };
 }

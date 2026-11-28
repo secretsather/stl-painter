@@ -1,5 +1,13 @@
 # What's new in STL Painter
 
+## What's new in 1.1.0
+
+- **Paint up to a seam.** Press **M** to trace a smooth boundary on the model. Hold and drag to preview the next segment, release to place it, and orbit between nodes. Return to the first node to close a loop. Apply the seam, then enable **Stop at seams** in Fill. Juniper includes three starter seams. [Watch the seam demo](README.md#seam).
+- **Share toolheads between colors.** Open **Slice colors** to see which spools to load first and where each shared head can switch. The planner counts the two or three physical filaments needed for mixed colors and includes return swaps when a color is needed again.
+- **Export the swap plan.** Choose **Full color** or **Limit to printer heads**. A limited export embeds suggested pauses in the 3MF and saves a printable PDF with spool changes and height windows. Open the 3MF as a project and check the pause layers in the sliced preview.
+- **Orbit around a detail.** Right-drag on the model to orbit around the point you clicked. Starting in empty space keeps the current pivot.
+- **Repair geometry on demand.** Use **Project → Repair STL** to review and apply a repair. Undo restores the previous geometry and paint.
+
 ## What's new in 1.0.15
 
 - **Meet Juniper, Sky Courier.** A fresh launch opens a fully painted, four-color fox aviator with goggles, a scarf, and a flight jacket. Try the painting tools on Juniper and save your own copy. Opening an existing project loads it directly.
